@@ -4,7 +4,7 @@
 
 VocabOps is an open, corpus-driven English vocabulary project for software engineers.
 
-It combines real-world software engineering corpora with spaced repetition and habit tracking so learners can study the vocabulary that actually appears in GitHub, documentation, Stack Overflow, RFCs, and LLM-assisted development.
+It combines real-world software engineering corpora with spaced repetition and habit tracking so learners can study the vocabulary that actually appears in engineering discussions, documentation, and LLM-assisted development.
 
 ## Why VocabOps
 
@@ -68,59 +68,77 @@ Planned capabilities:
 - category mastery
 - retention trend
 
-## Corpus direction
+## Corpus v0.1
 
-The long-term dataset should compare multiple sources instead of treating software English as one homogeneous corpus.
+The first corpus deliberately reuses existing datasets before VocabOps builds custom large-scale collectors.
 
 ```text
-GitHub / Docs / Stack Overflow / RFCs
-                  |
-                  v
-       Human-written SE corpus
-                  |
-                  +-------------------+
-                                      |
-                                      v
-                              Vocabulary ranking
-                                      ^
-                                      |
-                  +-------------------+
-                  |
-                  v
-      GPT / Claude / Gemini / agents
-           LLM-generated corpus
+Stack Overflow dump / SOTorrent
+             +
+         GH Archive
+             +
+       CodeSearchNet
+             |
+             v
+ Human Software Engineering Corpus
+             |
+             +-------------------+
+                                 |
+                                 v
+                          se_specificity
+                                 ^
+                                 |
+                             wordfreq
+                      General-English baseline
 ```
 
-This makes it possible to distinguish:
+This lets the project test its central hypothesis quickly: whether corpus-derived ranking surfaces vocabulary that is more useful than a hand-written software glossary.
 
-- general English
-- software-engineering English
-- ecosystem-specific language
-- LLM-native / agentic coding language
+Direct GitHub repository cloning, official-doc crawling, and larger corpora come later when measurable coverage gaps justify them.
 
-The last category includes expressions that modern coding assistants may overrepresent relative to human-written engineering text. VocabOps should measure that empirically instead of labeling words as "AI-ish" by intuition alone.
+## LLM-native English
+
+A later corpus layer compares human-written software-engineering text with controlled LLM output.
+
+```text
+Human SE corpus --------------------+
+                                    |
+                                    v
+                              comparative stats
+                                    ^
+                                    |
+Shared engineering tasks -----------+
+     |       |       |
+   Claude   GPT   Gemini
+```
+
+Terms such as `deterministically`, `recursively`, or `canonical` may be tracked as candidates, but VocabOps should only label them LLM-native when the corpus measurements support that conclusion.
 
 ## MVP
 
 The first useful version targets:
 
+- Human Software Corpus v0.1
+- reproducible `se_specificity` ranking
 - Core 500 vocabulary
-- a documented data schema
-- frequency and domain-specificity fields
+- documented data schema and corpus manifests
 - CEFR and Japanese glosses
 - collocations and examples
 - FSRS-based reviews
 - daily heatmap and streak
-- a first LLM-native vocabulary slice
+- a first LLM-native vocabulary experiment
 
 ## Repository layout
 
 ```text
 vocabops/
+├── corpus/
+│   └── manifests/
 ├── data/
 │   └── sample.json
 ├── docs/
 │   ├── architecture.md
+│   ├── corpus-sources.md
 │   ├── data-schema.md
 │   └── roadmap.md
 └── README.md
@@ -129,13 +147,14 @@ vocabops/
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Corpus sources](docs/corpus-sources.md)
 - [Data schema](docs/data-schema.md)
 - [Roadmap](docs/roadmap.md)
 
 ## Status
 
-Early-stage. The current priority is to lock down the corpus methodology and vocabulary schema before building the learning UI.
+Early-stage. The current priority is to build an end-to-end corpus prototype from existing datasets and validate the vocabulary ranking before building custom crawlers or the learning UI.
 
 ## License
 
-Code is licensed under the repository license. Dataset licensing and attribution rules will be documented separately as corpus sources are finalized.
+Code is licensed under the repository license. Third-party corpus licensing and attribution remain source-specific. VocabOps public releases should primarily distribute derived vocabulary data and aggregate statistics rather than raw third-party text.
