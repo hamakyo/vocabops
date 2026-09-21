@@ -1,0 +1,297 @@
+{
+  "dataset": "vocabops-sample",
+  "version": "0.1.0-dev",
+  "note": "Illustrative records for validating the schema. Corpus-derived metrics remain null until the measurement pipeline exists.",
+  "terms": [
+    {
+      "id": "retrieve.v",
+      "term": "retrieve",
+      "lemma": "retrieve",
+      "pos": "verb",
+      "ja": {
+        "gloss": "取り戻す、取得する",
+        "software_gloss": "データや情報を取得する"
+      },
+      "cefr": "B2",
+      "categories": ["backend", "database", "core"],
+      "forms": ["retrieves", "retrieved", "retrieving"],
+      "collocations": ["retrieve data", "retrieve a record", "retrieve credentials"],
+      "examples": [
+        {
+          "text": "The client retrieves the cached response before sending another request.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "persist.v",
+      "term": "persist",
+      "lemma": "persist",
+      "pos": "verb",
+      "ja": {
+        "gloss": "持続する",
+        "software_gloss": "状態やデータを永続化する"
+      },
+      "cefr": "C1",
+      "categories": ["backend", "database", "core"],
+      "forms": ["persists", "persisted", "persisting"],
+      "collocations": ["persist data", "persist state", "persist changes"],
+      "examples": [
+        {
+          "text": "Persist the session state before the process exits.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "invoke.v",
+      "term": "invoke",
+      "lemma": "invoke",
+      "pos": "verb",
+      "ja": {
+        "gloss": "呼び出す",
+        "software_gloss": "関数、API、処理などを呼び出す"
+      },
+      "cefr": "C1",
+      "categories": ["core", "documentation"],
+      "forms": ["invokes", "invoked", "invoking"],
+      "collocations": ["invoke a function", "invoke an API", "invoke the handler"],
+      "examples": [
+        {
+          "text": "The runtime invokes the handler for each incoming event.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "propagate.v",
+      "term": "propagate",
+      "lemma": "propagate",
+      "pos": "verb",
+      "ja": {
+        "gloss": "伝播させる",
+        "software_gloss": "エラー、状態、変更などを上位または周囲へ伝播させる"
+      },
+      "cefr": "C1",
+      "categories": ["core", "architecture"],
+      "forms": ["propagates", "propagated", "propagating"],
+      "collocations": ["propagate an error", "propagate changes", "propagate context"],
+      "examples": [
+        {
+          "text": "The error is propagated to the caller instead of being swallowed.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "reproduce.v",
+      "term": "reproduce",
+      "lemma": "reproduce",
+      "pos": "verb",
+      "ja": {
+        "gloss": "再現する",
+        "software_gloss": "不具合や問題を再現する"
+      },
+      "cefr": "B2",
+      "categories": ["testing", "git", "core"],
+      "forms": ["reproduces", "reproduced", "reproducing"],
+      "collocations": ["reproduce an issue", "reproduce a bug", "steps to reproduce"],
+      "examples": [
+        {
+          "text": "I can reproduce the issue only when the cache is enabled.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "invalidate.v",
+      "term": "invalidate",
+      "lemma": "invalidate",
+      "pos": "verb",
+      "ja": {
+        "gloss": "無効にする",
+        "software_gloss": "キャッシュ、トークン、エントリなどを無効化する"
+      },
+      "cefr": "C1",
+      "categories": ["backend", "cache", "core"],
+      "forms": ["invalidates", "invalidated", "invalidating"],
+      "collocations": ["invalidate the cache", "invalidate a token", "invalidate an entry"],
+      "examples": [
+        {
+          "text": "The cache is invalidated when the configuration changes.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "deterministically.adv",
+      "term": "deterministically",
+      "lemma": "deterministically",
+      "pos": "adverb",
+      "ja": {
+        "gloss": "決定論的に",
+        "software_gloss": "同じ入力・条件なら同じ結果になる形で"
+      },
+      "cefr": null,
+      "categories": ["architecture", "llm-native-candidate"],
+      "forms": [],
+      "collocations": ["behave deterministically", "generate deterministically", "resolve deterministically"],
+      "examples": [
+        {
+          "text": "The build should resolve dependencies deterministically.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "essential", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "recursively.adv",
+      "term": "recursively",
+      "lemma": "recursively",
+      "pos": "adverb",
+      "ja": {
+        "gloss": "再帰的に",
+        "software_gloss": "同じ処理や構造を自身の内側へ繰り返し適用する形で"
+      },
+      "cefr": null,
+      "categories": ["core", "llm-native-candidate"],
+      "forms": [],
+      "collocations": ["process recursively", "traverse recursively", "resolve recursively"],
+      "examples": [
+        {
+          "text": "The function recursively traverses every child node.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "essential", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "canonical.adjective",
+      "term": "canonical",
+      "lemma": "canonical",
+      "pos": "adjective",
+      "ja": {
+        "gloss": "標準的な、正準な",
+        "software_gloss": "複数の表現から基準となる一意の表現"
+      },
+      "cefr": null,
+      "categories": ["architecture", "llm-native-candidate"],
+      "forms": [],
+      "collocations": ["canonical form", "canonical representation", "canonical URL"],
+      "examples": [
+        {
+          "text": "Normalize the input into a canonical representation before comparing it.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "essential", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    },
+    {
+      "id": "fallback.n",
+      "term": "fallback",
+      "lemma": "fallback",
+      "pos": "noun",
+      "ja": {
+        "gloss": "代替手段",
+        "software_gloss": "通常の処理が使えない場合に採用する代替処理"
+      },
+      "cefr": null,
+      "categories": ["architecture", "core"],
+      "forms": ["fallbacks"],
+      "collocations": ["fallback behavior", "fallback mechanism", "use a fallback"],
+      "examples": [
+        {
+          "text": "Use the local cache as a fallback when the service is unavailable.",
+          "kind": "curated"
+        }
+      ],
+      "metrics": {
+        "frequency": {"github": null, "stackoverflow": null, "docs": null, "llm": null},
+        "document_frequency": null,
+        "se_specificity": null,
+        "llm_lift": null,
+        "model_lift": {"claude": null, "gpt": null, "gemini": null}
+      },
+      "learning": {"tier": "core", "priority": null},
+      "provenance": {"dataset_version": "0.1.0-dev", "metric_snapshot": null, "sources": []}
+    }
+  ]
+}
