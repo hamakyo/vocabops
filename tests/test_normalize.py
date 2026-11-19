@@ -2,7 +2,9 @@
 
 from vocabops.ingest import ENGLISH_RATIO_MIN_FREQUENCY
 from vocabops.normalize import (
+    ATTESTATION_MIN_DOCUMENTS,
     LEMMA_MIN_FREQUENCY,
+    attested_headwords,
     clean_text,
     lemmatize,
     normalize,
@@ -291,3 +293,74 @@ def test_normalize_end_to_end_on_markup_and_code():
         "See https://example.invalid/1 for `details`."
     )
     assert normalize(text) == ["client", "retrieve", "session", "see"]
+
+
+def test_attestation_threshold_is_three_documents():
+    assert ATTESTATION_MIN_DOCUMENTS == 3
+
+
+def test_attested_headwords_needs_three_documents():
+    two = [tokenize("rebase it"), tokenize("rebase again")]
+    assert attested_headwords(two) == frozenset()
+
+    three = two + [tokenize("rebase now")]
+    assert attested_headwords(three) == frozenset({"rebase"})
+
+
+def test_attested_headwords_counts_documents_not_occurrences():
+    # Four occurrences in two documents is not corpus evidence: repetition
+    # inside one document must not attest its own form.
+    repeated = [tokenize("rebase rebase rebase"), tokenize("rebase"), tokenize("other")]
+    assert attested_headwords(repeated) == frozenset()
+
+
+def test_lemmatize_without_corpus_is_unchanged():
+    # The corpus pre-pass is opt-in: the pure single-token behavior must not
+    # change for callers that pass no attested set.
+    assert lemmatize("rebased") == "rebased"
+    assert lemmatize("rebases") == "rebases"
+    assert lemmatize("deduping") == "deduping"
+
+
+def test_lemmatize_accepts_an_attested_low_frequency_headword():
+    attested = frozenset({"rebase"})  # wordfreq 6.46e-08
+    assert lemmatize("rebased", attested) == "rebase"
+    assert lemmatize("rebases", attested) == "rebase"
+
+
+def test_lemmatize_prefers_wordfreq_valid_candidate_over_attested_one():
+    # "merg" is attested here but is not a word; "merge" is wordfreq-valid and
+    # more frequent, so attestation must not win the race.
+    assert lemmatize("merged", frozenset({"merg"})) == "merge"
+
+
+def test_attested_dedup_merges_its_inflections():
+    # "dedup" and "dedupe" are both wordfreq 0.0; the suffix rules generate both
+    # for "deduped"/"deduping", so attestation is the only thing that can
+    # decide. Alphabetical order breaks the zero-frequency tie.
+    attested = frozenset({"dedup"})
+    assert lemmatize("deduped", attested) == "dedup"
+    assert lemmatize("deduping", attested) == "dedup"
+    assert lemmatize("dedups", attested) == "dedup"
+
+
+def test_attestation_does_not_add_new_alway_merges():
+    # "alway" stays the one known bad merge from the wordfreq path (3.89e-07).
+    # Attestation must not create another producer of it.
+    texts = [
+        "It is always the same rebase.",
+        "Always rebase before merging.",
+        "The rebased branch always passes.",
+        "We deduped and rebased the tree.",
+    ]
+    token_documents = [tokenize(clean_text(text)) for text in texts]
+    attested = attested_headwords(token_documents)
+    assert "always" in attested
+
+    producers = {
+        token
+        for tokens in token_documents
+        for token in tokens
+        if lemmatize(token, attested) == "alway"
+    }
+    assert producers == {"always"}

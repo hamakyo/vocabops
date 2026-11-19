@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from vocabops.normalize import normalize
 from vocabops.pipeline import (
@@ -73,6 +74,8 @@ def test_run_writes_ranking_and_manifest(tmp_path):
         "documents": 2,
         "tokens": tokens,
         "min_df": 1,
+        "attestation_min_documents": 3,
+        "attested_forms": 0,
     }
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
     assert sum(row["tf"] for row in ranking) == tokens
@@ -286,3 +289,92 @@ def test_jsonl_input_without_usable_documents_is_rejected(tmp_path, capsys):
 
     assert exit_code == 2
     assert "no documents found" in capsys.readouterr().err
+
+
+def _write_texts(directory: Path, texts: list[str]) -> Path:
+    directory.mkdir()
+    for index, text in enumerate(texts, start=1):
+        (directory / f"{index:02d}.txt").write_text(text, encoding="utf-8")
+    return directory
+
+
+def _ranking_terms(output: Path) -> dict[str, dict[str, Any]]:
+    rows = json.loads((output / "ranking.json").read_text(encoding="utf-8"))
+    return {row["term"]: row for row in rows}
+
+
+def test_corpus_attestation_merges_rebase_inflections(tmp_path):
+    # "rebase" is wordfreq 6.46e-08, below the 3e-07 lemma floor, so without
+    # corpus evidence "rebased"/"rebases" can never validate. The headword
+    # occurs standalone in three documents here, which is the attestation
+    # threshold; the two inflections occur in one document each and are
+    # therefore not attested themselves.
+    corpus = _write_texts(
+        tmp_path / "corpus",
+        [
+            "We rebase the branch before the merge.\n",
+            "Rebase the branch again.\n",
+            "A rebase rewrites history.\n",
+            "The rebased branch is clean.\n",
+            "He rebases the branch daily.\n",
+        ],
+    )
+    output = tmp_path / "out"
+
+    manifest = run(corpus, output, "attested")
+    terms = _ranking_terms(output)
+
+    assert int(terms["rebase"]["tf"]) == 5
+    assert int(terms["rebase"]["df"]) == 5
+    assert "rebased" not in terms
+    assert "rebases" not in terms
+    assert manifest["attestation_min_documents"] == 3
+    assert int(manifest["attested_forms"]) >= 1
+
+
+def test_corpus_attestation_below_threshold_does_not_merge(tmp_path):
+    # The headword occurs in only two documents, so it is not attested and the
+    # inflections keep their own rows, exactly as before this mechanism.
+    corpus = _write_texts(
+        tmp_path / "corpus",
+        [
+            "We rebase the branch before the merge.\n",
+            "Rebase the branch again.\n",
+            "The rebased branch is clean.\n",
+            "He rebases the branch daily.\n",
+        ],
+    )
+    output = tmp_path / "out"
+
+    run(corpus, output, "unattested")
+    terms = _ranking_terms(output)
+
+    assert {"rebase", "rebased", "rebases"} <= set(terms)
+    assert int(terms["rebase"]["tf"]) == 2
+
+
+def test_corpus_attestation_merges_dedup_inflections(tmp_path):
+    # "dedup" and "dedupe" are both wordfreq 0.0. The suffix rules propose
+    # "dedup"/"dedupe" for "deduped" and "deduping"; with "dedup" attested the
+    # zero-frequency tie is broken in its favour by the attestation rule.
+    corpus = _write_texts(
+        tmp_path / "corpus",
+        [
+            "Run dedup nightly.\n",
+            "The dedup pass is slow.\n",
+            "Dedup runs first.\n",
+            "The deduping step finished.\n",
+            "We deduped the archive.\n",
+        ],
+    )
+    output = tmp_path / "out"
+
+    run(corpus, output, "attested")
+    terms = _ranking_terms(output)
+
+    assert int(terms["dedup"]["tf"]) == 5
+    assert int(terms["dedup"]["df"]) == 5
+    assert "deduping" not in terms
+    assert "deduped" not in terms
+    assert "dedupe" not in terms
+
