@@ -1,0 +1,247 @@
+"""Text normalization for the VocabOps corpus pipeline.
+
+The prototype deliberately uses a small, dependency-free normalization layer so
+that every step is inspectable and reproducible:
+
+1. drop fenced code blocks (```` ``` ```` and ``~~~`` fences)
+2. drop inline code spans (`like this`)
+3. drop HTML tags
+4. drop URLs
+5. lowercase
+6. tokenize on word characters
+7. lemmatize with an irregular map plus suffix rules
+8. remove English stopwords
+
+This is a heuristic lemmatizer, not a full morphological analyzer. See
+``docs/prototype.md`` for the known limitations.
+"""
+
+from __future__ import annotations
+
+import re
+
+__all__ = [
+    "STOPWORDS",
+    "IRREGULAR_LEMMAS",
+    "clean_text",
+    "tokenize",
+    "lemmatize",
+    "normalize",
+]
+
+# Fenced code blocks, including an unterminated fence at end of document.
+_FENCED_CODE_RE = re.compile(r"(?:```|~~~).*?(?:(?:```|~~~)|\Z)", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_HTML_TAG_RE = re.compile(r"<[^>\n]+>")
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+# Words whose lemma cannot be derived with suffix rules.
+IRREGULAR_LEMMAS: dict[str, str] = {
+    "am": "be",
+    "are": "be",
+    "been": "be",
+    "being": "be",
+    "is": "be",
+    "was": "be",
+    "were": "be",
+    "did": "do",
+    "does": "do",
+    "doing": "do",
+    "done": "do",
+    "had": "have",
+    "has": "have",
+    "having": "have",
+    "goes": "go",
+    "went": "go",
+    "gone": "go",
+    "got": "get",
+    "gotten": "get",
+    "made": "make",
+    "said": "say",
+    "saw": "see",
+    "seen": "see",
+    "took": "take",
+    "taken": "take",
+    "thought": "think",
+    "brought": "bring",
+    "built": "build",
+    "found": "find",
+    "held": "hold",
+    "kept": "keep",
+    "left": "leave",
+    "lost": "lose",
+    "ran": "run",
+    "sent": "send",
+    # "underlying" is a target term in the prototype; keep it intact instead of
+    # letting the -ing rule turn it into "underly".
+    "underlie": "underlying",
+    "underlies": "underlying",
+    "underlay": "underlying",
+    "underlying": "underlying",
+    "data": "data",
+}
+
+# Standard English stopwords. Kept deliberately conservative: function words
+# only, so content words in the fixture corpus stay available for ranking.
+STOPWORDS: frozenset[str] = frozenset(
+    """
+    a about above after again against all also am an and any anyone anything
+    are aren't as at be because been before being below between both but by can
+    can't cannot could couldn't did didn't do does doesn't doing don't down
+    during each everything few for from further had hadn't has hasn't have
+    haven't having he he'd he'll he's her here here's hers herself him himself
+    his how how's i i'd i'll i'm i've if in into is isn't it it's its itself
+    just let's me more most mustn't my myself neither no nobody nor not nothing
+    of off on once only or other ought our ours ourselves out over own same
+    shan't she she'd she'll she's should shouldn't so some someone something
+    such than that that's the their theirs them themselves then there there's
+    these they they'd they'll they're they've this those through to too under
+    until up very was wasn't we we'd we'll we're we've were weren't what what's
+    when when's where where's which while who who's whom why why's will with
+    won't would wouldn't you you'd you'll you're you've your yours yourself
+    yourselves
+    """.split()
+)
+
+_VOWELS = frozenset("aeiou")
+
+# Stems that take a restored final "e" after -ed / -ing stripping, e.g.
+# propagat + e -> propagate, invok + e -> invoke, cach + e -> cache.
+_E_RESTORE_SUFFIXES = (
+    "at",
+    "iz",
+    "bl",
+    "iv",
+    "ev",
+    "ok",
+    "ch",
+    "ng",
+    "ag",
+    "ur",
+    "os",
+    "us",
+    "ac",
+    "uc",
+    "yp",
+    "ov",
+    "rv",
+    "dl",
+    "as",
+)
+
+
+def clean_text(text: str) -> str:
+    """Strip code, markup and URLs, then lowercase.
+
+    Fenced code blocks are removed before inline spans so that a fence's
+    backticks are never mistaken for inline code markers.
+    """
+    text = _FENCED_CODE_RE.sub(" ", text)
+    text = _INLINE_CODE_RE.sub(" ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _URL_RE.sub(" ", text)
+    return text.lower()
+
+
+def tokenize(text: str) -> list[str]:
+    """Return lowercase word-character tokens.
+
+    Punctuation, underscores and pure-number tokens are dropped; a token must
+    contain at least one letter.
+    """
+    tokens = []
+    for raw in _TOKEN_RE.findall(text):
+        token = raw.strip("_").lower()
+        if not token or "_" in token:
+            continue
+        if not any(ch.isalpha() for ch in token):
+            continue
+        if len(token) == 1 and token not in {"a", "i"}:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _strip_doubled_consonant(stem: str) -> str:
+    # "ss" is excluded so "passed" stays "pass" and "missing" stays "miss"
+    # instead of collapsing to "pas" / "mis".
+    if (
+        len(stem) > 2
+        and stem[-1] == stem[-2]
+        and stem[-1] not in _VOWELS
+        and stem[-1] != "s"
+    ):
+        return stem[:-1]
+    return stem
+
+
+def _restore_e(stem: str) -> str:
+    # Stems in -tch are already complete: "matching" -> "match", not "matche".
+    if stem.endswith("tch"):
+        return stem
+    if stem.endswith(_E_RESTORE_SUFFIXES):
+        return stem + "e"
+    return stem
+
+
+def lemmatize(token: str) -> str:
+    """Reduce an inflected English word to a canonical form.
+
+    Order of operations: irregular map, then plural, then past tense, then
+    present participle. Rules only fire on lowercase alphabetic tokens of
+    length > 3 so short words such as "is" or "bus" are left alone.
+    """
+    token = token.lower()
+    if token in IRREGULAR_LEMMAS:
+        return IRREGULAR_LEMMAS[token]
+    if len(token) <= 3 or not token.isalpha():
+        return token
+
+    # Plurals / third-person singular. Note: silent-e words ending in -ches
+    # ("caches") lose the final "e" here; documented as a known limitation.
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
+    if token.endswith("sses") and len(token) > 4:
+        return token[:-2]
+    if token.endswith(("shes", "ches", "xes", "zes")):
+        return token[:-2]
+    if token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return token[:-1]
+
+    # Past tense.
+    if token.endswith("ied") and len(token) > 4:
+        return token[:-3] + "y"
+    if token.endswith("ed") and len(token) > 4:
+        stem = _strip_doubled_consonant(token[:-2])
+        return _restore_e(stem)
+
+    # Present participle.
+    if token.endswith("ing") and len(token) > 5:
+        stem = token[:-3]
+        if len(stem) < 4:
+            # Avoid destroying short words such as "string" -> "str".
+            return token
+        stem = _strip_doubled_consonant(stem)
+        return _restore_e(stem)
+
+    return token
+
+
+def normalize(text: str, remove_stopwords: bool = True) -> list[str]:
+    """Full normalization pipeline for one document.
+
+    Returns the ordered list of lemma tokens. Stopword removal checks both the
+    raw token and the lemma: the raw check catches stopwords such as
+    "anything"/"during" whose heuristic lemma would otherwise survive, and the
+    lemma check catches inflected forms such as "being" -> "be".
+    """
+    tokens = tokenize(clean_text(text))
+    lemmas = [lemmatize(token) for token in tokens]
+    if remove_stopwords:
+        lemmas = [
+            lemma
+            for token, lemma in zip(tokens, lemmas)
+            if token not in STOPWORDS and lemma not in STOPWORDS
+        ]
+    return lemmas
