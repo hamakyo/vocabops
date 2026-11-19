@@ -72,6 +72,7 @@ def test_run_writes_ranking_and_manifest(tmp_path):
         "general_baseline": "wordfreq",
         "documents": 2,
         "tokens": tokens,
+        "min_df": 1,
     }
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == manifest
     assert sum(row["tf"] for row in ranking) == tokens
@@ -137,4 +138,151 @@ def test_cli_rejects_empty_input_directory(tmp_path, capsys):
     )
 
     assert exit_code == 2
-    assert "no .txt documents" in capsys.readouterr().err
+    assert "no documents found" in capsys.readouterr().err
+
+
+def test_min_df_filters_low_document_frequency_terms(tmp_path):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.txt").write_text("Retrieve the cache entry.\n", encoding="utf-8")
+    (corpus / "b.txt").write_text(
+        "Retrieve the record, then invalidate the cache.\n", encoding="utf-8"
+    )
+    (corpus / "c.txt").write_text("Invalidate the fallback path.\n", encoding="utf-8")
+    unfiltered = tmp_path / "all"
+    filtered = tmp_path / "df2"
+
+    run(corpus, unfiltered, "test-snapshot")
+    manifest = run(corpus, filtered, "test-snapshot", min_df=2)
+
+    all_rows = json.loads((unfiltered / "ranking.json").read_text(encoding="utf-8"))
+    kept_rows = json.loads((filtered / "ranking.json").read_text(encoding="utf-8"))
+
+    assert {row["term"] for row in all_rows if row["df"] == 1} == {
+        "entry",
+        "fallback",
+        "path",
+        "record",
+    }
+    assert kept_rows
+    assert all(row["df"] >= 2 for row in kept_rows)
+    assert {row["term"] for row in kept_rows} == {"retrieve", "cache", "invalidate"}
+    assert [row["term"] for row in kept_rows] == [
+        row["term"] for row in all_rows if row["df"] >= 2
+    ]
+    assert manifest["min_df"] == 2
+
+    with (filtered / "ranking.csv").open(encoding="utf-8", newline="") as handle:
+        csv_terms = [row["term"] for row in csv.DictReader(handle)]
+    assert csv_terms == [row["term"] for row in kept_rows]
+
+
+def test_min_df_default_does_not_filter(tmp_path):
+    corpus = _write_corpus(tmp_path / "corpus")
+    output = tmp_path / "out"
+
+    manifest = run(corpus, output, "test-snapshot")
+
+    ranking = json.loads((output / "ranking.json").read_text(encoding="utf-8"))
+    assert manifest["min_df"] == 1
+    assert any(row["df"] == 1 for row in ranking)
+
+
+def test_cli_rejects_min_df_below_one(tmp_path, capsys):
+    corpus = _write_corpus(tmp_path / "corpus")
+
+    exit_code = main(
+        [
+            "--input",
+            str(corpus),
+            "--output",
+            str(tmp_path / "out"),
+            "--snapshot-id",
+            "x",
+            "--min-df",
+            "0",
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--min-df" in capsys.readouterr().err
+
+
+def _write_jsonl(path: Path) -> Path:
+    records = [
+        {
+            "doc_id": "a" * 64,
+            "source_family": "gharchive",
+            "repo": "acme/widgets",
+            "text": "The worker must retrieve and persist the record.",
+        },
+        {
+            "doc_id": "b" * 64,
+            "source_family": "gharchive",
+            "repo": None,
+            "text": "We invalidate the cache when the schema changes.",
+        },
+        {
+            "doc_id": "c" * 64,
+            "source_family": "fixture",
+            "repo": None,
+            "text": "A review note about fallbacks.",
+        },
+    ]
+    lines = [json.dumps(record) for record in records]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_jsonl_input_produces_ranking_and_sources(tmp_path):
+    path = _write_jsonl(tmp_path / "documents.jsonl")
+    output = tmp_path / "out"
+
+    manifest = run(path, output, "jsonl-snapshot")
+
+    assert (output / "ranking.json").is_file()
+    assert (output / "ranking.csv").is_file()
+    assert manifest["sources"] == ["fixture", "gharchive"]
+    assert manifest["documents"] == 3
+    assert manifest["tokens"] == sum(
+        len(normalize(json.loads(line)["text"]))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    )
+    terms = {
+        row["term"]
+        for row in json.loads((output / "ranking.json").read_text(encoding="utf-8"))
+    }
+    assert {"retrieve", "persist", "invalidate", "cache"} <= terms
+
+
+def test_jsonl_sources_come_from_the_data(tmp_path):
+    path = _write_jsonl(tmp_path / "documents.jsonl")
+    manifest = run(path, tmp_path / "out", "jsonl-snapshot")
+    assert manifest["sources"] == ["fixture", "gharchive"]
+
+    single = tmp_path / "single.jsonl"
+    single.write_text(
+        json.dumps({"source_family": "gharchive", "text": "Only one family here."}) + "\n",
+        encoding="utf-8",
+    )
+    single_manifest = run(single, tmp_path / "out2", "jsonl-snapshot")
+    assert single_manifest["sources"] == ["gharchive"]
+
+
+def test_jsonl_input_without_usable_documents_is_rejected(tmp_path, capsys):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--input",
+            str(empty),
+            "--output",
+            str(tmp_path / "out"),
+            "--snapshot-id",
+            "x",
+        ]
+    )
+
+    assert exit_code == 2
+    assert "no documents found" in capsys.readouterr().err
