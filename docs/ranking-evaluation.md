@@ -81,7 +81,7 @@ order.
 | **M0 pooled** | Existing combined ranking, recomputed from the counts. One count table over the concatenation, scored with the formula above. | 9,463 |
 | **M1 mean** | Arithmetic mean of the three per-source scores. A term absent from a source contributes that source's floor score. | 9,463 |
 | **M2 min** | Minimum of the three per-source scores: a term must be specific to every source. An absent term is capped by the floor. | 9,463 |
-| **M3 Borda** | For each source, rank its own `df >= 10` terms by that source's score (ties by term ascending). Sum the three ranks. A term absent from a source's list receives `listed + 1`, i.e. below every listed term and tied with every other absent term; the listed lengths are 6,138 / 5,167 / 2,527 after adding one. | 9,463 |
+| **M3 Borda** | For each source, rank its own `df >= 10` terms by that source's score (ties by term ascending). Sum the three ranks. A term absent from a source's list receives `listed + 1`, i.e. below every listed term and tied with every other absent term; with listed counts of 6,138 / 5,166 / 2,526 the absence penalties are 6,139 / 5,167 / 2,527. | 9,463 |
 | **M4 pooled + presence** | Pooled score, restricted to terms with `df > 0` in at least 2 of 3 sources **and** pooled `df >= 10`. Ineligible terms are removed, not demoted. | 8,377 |
 | **M5 geometric** | Geometric mean of the three per-source scores after a positive shift. Shift = `1.0 - min(score)` over the whole union vocabulary and all three sources = **8.623521**, so the smallest observed score maps to exactly 1.0 and every factor is >= 1. | 9,463 |
 
@@ -249,11 +249,11 @@ and only rank fusion uses it.
 
 **What Borda sacrifices.** Three costs, all visible above:
 
-1. **`param` at rank 31.** `param` is rank 1 in CodeSearchNet (`df` 10,367),
-   rank ~500 in Stack Overflow and rank ~800 in GH. Rank fusion compresses the
-   huge CSN gap and counts it as "listed" in the other two, so it lands in the
-   top 100. Any method that penalizes a weak source (mean, min, geometric) does
-   better here and worse everywhere else.
+1. **`param` at rank 31.** `param` occurs in 10,367 CodeSearchNet documents
+   against 263 in Stack Overflow and 76 in GH. Rank fusion compresses that gap
+   and counts it as "listed" in the other two, so it lands in the top 100. Any
+   method that penalizes a weak source (mean, min, geometric) does better here
+   and worse everywhere else.
 2. **41 of the top 100 are bucket (b)** technical nouns, and `kwarg` (1,008) and
    `dataframe` (1,003) sit just outside the first thousand. Borda is better than
    the baseline, not clean.
@@ -318,7 +318,7 @@ this round.
 ## Reproduction
 
 ```bash
-# 1. per-source counts (one pass over the three document files, ~2 min)
+# 1. per-source counts (one pass over the three document files, ~20 s)
 .venv/bin/python scripts/source_counts.py \
     --output out/ranking-eval/source-counts.json
 
