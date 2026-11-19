@@ -635,12 +635,12 @@ pipeline runs on it produced identical `ranking.json`, `ranking.csv` and `manife
 | `underlying` | 4,312 | 4,560 | 4,279 | 76 | 71 |
 
 Every tf/df is identical to v0, because the corpus is the same document set and these
-terms are untouched by the tokenizer. All ranks improve by 3–116 places, and the whole
-gain comes from the vocabulary shrinking from 6,215 to 6,182 rows: the 33 types the
-tokenizer removes are 33 fewer competitors, not 33 fewer occurrences. `fallback` is
-still the only target inside the 500. Target-adjacent rows move the same way: `retry`
-105 → 110 → 104, `credential` 315 → 341 → 302, `endpoint` 435 → 467 → 407, `encode`
-789 → 885 → 757.
+terms are untouched by the tokenizer. All ranks improve: 3–33 places against v0 and
+14–281 against v0.1, and the whole gain comes from the vocabulary shrinking from 6,215
+to 6,182 rows: the 33 types the tokenizer removes are 33 fewer competitors, not 33 fewer
+occurrences. `fallback` is still the only target inside the 500. Target-adjacent rows
+move the same way: `retry` 105 → 110 → 104, `credential` 315 → 341 → 302, `endpoint`
+435 → 467 → 407, `encode` 789 → 885 → 757.
 
 ## Composition audit
 
