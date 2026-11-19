@@ -899,3 +899,72 @@ raw top 500 still carries 10.6% fragment residue, target coverage is 2 of 8, the
 annotation is a single LLM pass, and the corpus is one day of issue/PR prose. It does
 mean the next corpus round can tune the two sides separately, and it identifies depth
 (about rank 4,300) as the next lever for target coverage.
+
+# Part 5 — attested headwords and the v4 day ranking
+
+**Status: mechanism change, measured on the same corpus.** Part 4 named the unmerged
+inflections inside the vocabulary view (`rebase`/`rebased`/`rebases` as three rows, five
+rows for the `dedupe`/`dedup` family). This part records the fix and its effect. No
+candidate, audit, classification or view was regenerated, so everything in Parts 1–4
+still describes v0–v0.2 and the views built on them.
+
+## What changed
+
+The lemmatizer already proposed `rebase` for `rebased` and `rebases`; validation rejected
+it because `rebase` is wordfreq 6.46e-08, below the `3e-07` lemma floor (`dedup` and
+`dedupe` are 0.0). The pipeline now makes a pre-pass over its documents: tokenize raw
+forms, count in how many documents each form occurs, and treat forms in `>= 3` documents
+(`ATTESTATION_MIN_DOCUMENTS`) as attested headwords. Among the rule-generated candidates,
+the highest-wordfreq candidate is accepted if it is wordfreq-valid **or** attested;
+attestation therefore only decides when no wordfreq-valid candidate exists, and the
+single-token API is unchanged unless a caller passes an attested set. Details and the
+reproducibility argument are in [prototype.md](prototype.md#corpus-attested-headwords-and-the-v4-day-ranking).
+
+## Merge results (day corpus, `min_df 10`)
+
+The ranking shrank from 6,182 rows (v3) to **6,137** rows (v4): 121 terms left, 76
+entered. 832 raw types (6,519 occurrences) changed lemma; 624 headwords absorbed at
+least one form. `attested_forms` is 17,502 of 62,083 raw types.
+
+| family | v3 rows | v4 rows | effect |
+| --- | --- | --- | --- |
+| `rebase` | `rebase` #69 (335/216), `rebased` #103, `rebases` #178, `rebasing` #648 | `rebase` **#37** (492/317) | all four merge; tf adds exactly |
+| `dedup` | `dedup` #92 (40/35), `dedupe` #80 (45/39), `deduplicate` #277 (17/15), `deduplicated` #241, `deduplication` #420 | `dedup` #90 (45/39), `dedupe` #81 (49/41), `deduplicate` **#86** (47/36), `deduplication` #406 | `deduped` → `dedup`, `dedupes` → `dedupe`, `deduplicated`/`deduplicates`/`deduplicating` → `deduplicate`; the derivational noun is untouched |
+
+The largest absorbed families by tf are `maintainer` 177 (`maintainers`), `truncate` 174
+(`truncated`/`truncates`/`truncating`), `ceil` 169 (`ceiling`), `rebase` 157,
+`hardcode` 131, `deliverable` 118, `deprecate` 109, `serialize` 107, `redact` 106,
+`overwrite` 105, `refactor` 91, `recompute` 90, `worktree` 85, `reorder` 84, `param` 83,
+`webhook` 74, `symlink` 72, `sanitize` 66, `util` 66, `untrack` 65. The full table is in
+prototype.md.
+
+Target terms keep their tf/df and move with the vocabulary: `fallback` 185 → 195,
+`reproduce` 716 → 695, `persist` 1,176 → 1,143, `invalidate` 1,329 → 1,302, `invoke`
+1,527 → 1,497, `propagate` 1,835 → 1,798, `retrieve` 3,375 → 3,332, `underlying`
+4,279 → 4,233. `alway`, `spe` and `unbound` are unchanged in tf/df (#252 → 258,
+#667 → 648, #943 → 916); attestation introduced no second producer of `alway`.
+
+**One new bad merge.** `ceiling` → `ceil`: the `-ing` rule proposes `ceil`, which the
+corpus attests as a function name, and 169 of `ceiling`'s 184 occurrences move to it
+(v4 #205). The remaining 15 come from `ceilings` and stay `ceiling`. This is the known
+bare-stem defect class reached through attestation, and it is the measured cost of the
+rule as specified; a guard against it is future work.
+
+## View staleness
+
+The views in `data/` are v3 artifacts and were deliberately not rebuilt. Measured against
+v4: **61 of the vocabulary view's 500 rows no longer exist** as terms, because they merged
+into a headword — `rebased` (view 33) and `rebases` (view 55) into `rebase`; `params`
+(141) → `param`; `utils` (162) → `util`; `deprecated` (473) → `deprecate`; `deduplicated`
+(82) → `deduplicate`; `refactors` (22) → `refactor`; `maintainers` (186) → `maintainer`,
+among others. A further **91 surviving rows absorbed inflections and changed tf/rank**
+(`rebase`, `dedup`, `dedupe`, `deduplicate`, `worktree`, `webhook`, …), so **152 of 500
+rows (30.4%)** are affected in total. Of the 61 removals, 38 merge into a headword that is
+itself in the vocabulary view and 6 into one in the technical view; the rest merge into
+headwords outside both views.
+
+Consequence: the views are correct for v3 and stale for v4. The vocabulary view still
+overstates its distinct-word count (the Part 4 finding), and its ranks, tf and df no
+longer match any ranking in this repository. Regenerating the classification and the views
+is a separate round; this one changed the lemmatizer only.
+
