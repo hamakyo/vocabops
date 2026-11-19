@@ -226,10 +226,18 @@ def run(
         tokenize(clean_text(text)) for _, _, text in records
     ]
     attested = attested_headwords(token_documents)
-    documents = [
-        (doc_id, family, normalize_tokens(tokens, attested=attested))
-        for (doc_id, family, _), tokens in zip(records, token_documents)
-    ]
+    # Keep only the identity of each document while normalizing. The raw token
+    # lists are released one at a time, so the peak holds either raw tokens or
+    # lemmas for a document, not both full corpora at once. This matters for
+    # the 52k-document combined corpus and changes no output.
+    keys = [(doc_id, family) for doc_id, family, _ in records]
+    del records
+    documents = []
+    for index, (doc_id, family) in enumerate(keys):
+        tokens = token_documents[index]
+        documents.append((doc_id, family, normalize_tokens(tokens, attested=attested)))
+        token_documents[index] = []
+    del token_documents
 
     rows = rank_terms(
         [lemmas for _, _, lemmas in documents], alpha=alpha, min_df=min_df
