@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from vocabops.normalize import normalize
 from vocabops.pipeline import (
     PIPELINE_VERSION,
@@ -378,3 +380,100 @@ def test_corpus_attestation_merges_dedup_inflections(tmp_path):
     assert "deduped" not in terms
     assert "dedupe" not in terms
 
+
+
+def _write_two_family_jsonl(path: Path) -> Path:
+    """Two families with unequal list lengths; tokens are zero-frequency.
+
+    fam_a lists four equal-tf terms (so ranks are term-ascending), fam_b lists
+    two. All documents repeat the same text, so every term has df 2.
+    """
+    records = [
+        {"source_family": "fam_a", "text": "zqxaa zqxab zqxac zqxad"},
+        {"source_family": "fam_a", "text": "zqxaa zqxab zqxac zqxad"},
+        {"source_family": "fam_b", "text": "zqxbx zqxby"},
+        {"source_family": "fam_b", "text": "zqxbx zqxby"},
+    ]
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_borda_fuses_percentile_ranks_and_equalizes_absence(tmp_path):
+    path = _write_two_family_jsonl(tmp_path / "documents.jsonl")
+    output = tmp_path / "out"
+
+    run(path, output, "borda", min_df=2, ranking_method="borda")
+    rows = json.loads((output / "ranking.json").read_text(encoding="utf-8"))
+
+    # zqxab: rank 2 of 4 in fam_a + absent (1.0) in fam_b = 1.5
+    # zqxbx: absent (1.0) in fam_a + rank 1 of 2 in fam_b = 1.5
+    # Raw Borda would charge 2 + (2 + 1) = 5 and (4 + 1) + 1 = 6 here; the
+    # percentile variant gives the same absence cost in every source, so the
+    # two terms tie and the term-ascending rule orders them.
+    assert [(row["term"], row["se_specificity"]) for row in rows] == [
+        ("zqxaa", 1.25),
+        ("zqxab", 1.5),
+        ("zqxbx", 1.5),
+        ("zqxac", 1.75),
+        ("zqxad", 2.0),
+        ("zqxby", 2.0),
+    ]
+    # tf/df stay pooled counts; the score column is the fused value.
+    assert rows[0]["tf"] == 2
+    assert rows[0]["df"] == 2
+
+
+def test_borda_manifest_records_method_variant_and_sources(tmp_path):
+    path = _write_two_family_jsonl(tmp_path / "documents.jsonl")
+    output = tmp_path / "out"
+
+    manifest = run(path, output, "borda", min_df=2, ranking_method="borda")
+
+    assert manifest["ranking_method"] == "borda"
+    assert manifest["borda_variant"] == "percentile"
+    assert "lower is better" in manifest["score_semantics"]
+    assert manifest["documents"] == 4
+    assert manifest["tokens"] == 12
+    assert manifest["per_source"] == [
+        {"name": "fam_a", "documents": 2, "tokens": 8, "listed": 4},
+        {"name": "fam_b", "documents": 2, "tokens": 4, "listed": 2},
+    ]
+    assert json.loads((output / "manifest.json").read_text(encoding="utf-8")) == manifest
+
+
+def test_borda_rejects_a_single_source_family(tmp_path):
+    corpus = _write_corpus(tmp_path / "corpus")
+    with pytest.raises(ValueError, match="at least two source families"):
+        run(corpus, tmp_path / "out", "borda", ranking_method="borda")
+
+
+def test_borda_rejects_documents_without_source_family(tmp_path):
+    path = tmp_path / "documents.jsonl"
+    path.write_text(
+        json.dumps({"text": "A document with no family."}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="source_family"):
+        run(path, tmp_path / "out", "borda", ranking_method="borda")
+
+
+def test_borda_cli_reports_a_single_family_error(tmp_path, capsys):
+    corpus = _write_corpus(tmp_path / "corpus")
+
+    exit_code = main(
+        [
+            "--input",
+            str(corpus),
+            "--output",
+            str(tmp_path / "out"),
+            "--snapshot-id",
+            "x",
+            "--ranking-method",
+            "borda",
+        ]
+    )
+
+    assert exit_code == 2
+    assert "at least two source families" in capsys.readouterr().err

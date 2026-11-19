@@ -29,6 +29,15 @@ derived from the distinct source families actually present in the input.
 documents from ``ranking.json`` and ``ranking.csv``. Frequencies and scores
 are still computed over the whole corpus; only the emitted rows are filtered.
 
+``--ranking-method {pooled,borda}`` (default ``pooled``) selects the ranking.
+``pooled`` is the existing single-table ``se_specificity`` ranking. ``borda``
+groups documents by ``source_family``, ranks each source's own ``df >= min_df``
+terms by that source's ``se_specificity``, and sums percentile ranks
+(``rank / listed``; an absent term contributes 1.0), so the score column holds
+the fused value and lower is better. Borda mode requires at least two source
+families and fails rather than falling back. Its manifest records the method,
+variant and each source's document/token/listed counts.
+
 Before lemmatizing, the pipeline tokenizes every document and counts in how
 many documents each raw form occurs. Forms in at least
 ``ATTESTATION_MIN_DOCUMENTS`` (3) documents are corpus-attested headwords, and
@@ -56,10 +65,12 @@ import csv
 import hashlib
 import json
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .fusion import SourceStats, borda_scores_percentile
 from .normalize import (
     ATTESTATION_MIN_DOCUMENTS,
     attested_headwords,
@@ -73,6 +84,8 @@ from .stats import ALPHA, rank_terms
 __all__ = [
     "PIPELINE_VERSION",
     "SOURCE_FAMILY",
+    "RANKING_METHODS",
+    "BORDA_VARIANT",
     "document_id",
     "load_documents",
     "load_jsonl_documents",
@@ -85,6 +98,9 @@ SOURCE_FAMILY = "fixture"
 GENERAL_BASELINE = "wordfreq"
 SCORE_DECIMALS = 6
 DEFAULT_MIN_DF = 1
+RANKING_METHODS = ("pooled", "borda")
+# The Borda absence-penalty correction measured in docs/ranking-evaluation.md.
+BORDA_VARIANT = "percentile"
 
 
 def document_id(source_family: str, relative_path: str) -> str:
@@ -199,18 +215,53 @@ def _load_document_texts(path: Path) -> list[tuple[str, str, str]]:
     raise FileNotFoundError(f"input not found: {path}")
 
 
+def _source_stats(
+    documents: Sequence[tuple[str, str, list[str]]],
+) -> list[SourceStats]:
+    """Per-source count tables, ordered by source family name.
+
+    ``vocab_size`` is that source's number of distinct lemma types, the same
+    smoothing denominator the evaluation uses. Only terms the source uses are
+    stored; a missing key is a zero count.
+    """
+    tf: dict[str, Counter[str]] = {}
+    df: dict[str, Counter[str]] = {}
+    counts: dict[str, int] = {}
+    for _, family, lemmas in documents:
+        tf.setdefault(family, Counter()).update(lemmas)
+        df.setdefault(family, Counter()).update(set(lemmas))
+        counts[family] = counts.get(family, 0) + 1
+    return [
+        SourceStats(
+            name=family,
+            tf=dict(tf[family]),
+            df=dict(df[family]),
+            total_tokens=sum(tf[family].values()),
+            vocab_size=len(tf[family]),
+            documents=counts[family],
+        )
+        for family in sorted(tf)
+    ]
+
+
 def run(
     input_path: Path,
     output_dir: Path,
     snapshot_id: str,
     alpha: float = ALPHA,
     min_df: int = DEFAULT_MIN_DF,
+    ranking_method: str = "pooled",
 ) -> dict[str, object]:
     """Run the prototype pipeline and write ranking and manifest files."""
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     if min_df < 1:
         raise ValueError("min_df must be at least 1")
+    if ranking_method not in RANKING_METHODS:
+        raise ValueError(
+            f"unknown ranking method {ranking_method!r}; "
+            f"choose from {', '.join(RANKING_METHODS)}"
+        )
 
     records = _load_document_texts(input_path)
     if not records:
@@ -242,15 +293,48 @@ def run(
     rows = rank_terms(
         [lemmas for _, _, lemmas in documents], alpha=alpha, min_df=min_df
     )
-    ranking = [
-        {
-            "term": row["term"],
-            "tf": row["tf"],
-            "df": row["df"],
-            "se_specificity": round(float(row["se_specificity"]), SCORE_DECIMALS),
-        }
-        for row in rows
-    ]
+
+    sources: list[SourceStats] = []
+    if ranking_method == "borda":
+        # Borda fusion needs at least two lists to balance. A single family is
+        # an input error, not something to silently fall back from.
+        sources = _source_stats(documents)
+        if len(sources) < 2:
+            found = ", ".join(source.name for source in sources) or "none"
+            raise ValueError(
+                "borda ranking requires at least two source families; "
+                f"found {len(sources)} ({found}). Use --ranking-method pooled "
+                "or provide documents with distinct 'source_family' values."
+            )
+        fused = borda_scores_percentile(
+            [str(row["term"]) for row in rows], sources, min_df
+        )
+        ordered = sorted(
+            rows, key=lambda row: (fused[str(row["term"])], str(row["term"]))
+        )
+        ranking = [
+            {
+                "term": row["term"],
+                "tf": row["tf"],
+                "df": row["df"],
+                # The fused value, not se_specificity: sum of per-source
+                # rank/listed counts, absence contributes 1.0. Lower is better.
+                "se_specificity": round(
+                    float(fused[str(row["term"])]), SCORE_DECIMALS
+                ),
+            }
+            for row in ordered
+        ]
+    else:
+        ranking = [
+            {
+                "term": row["term"],
+                "tf": row["tf"],
+                "df": row["df"],
+                "se_specificity": round(float(row["se_specificity"]), SCORE_DECIMALS),
+            }
+            for row in rows
+        ]
 
     manifest: dict[str, object] = {
         "snapshot_id": snapshot_id,
@@ -263,6 +347,24 @@ def run(
         "attestation_min_documents": ATTESTATION_MIN_DOCUMENTS,
         "attested_forms": len(attested),
     }
+    if ranking_method == "borda":
+        # Pooled manifests stay exactly as before; the Borda manifest records
+        # what the score column means and what each source contributed.
+        manifest["ranking_method"] = "borda"
+        manifest["borda_variant"] = BORDA_VARIANT
+        manifest["score_semantics"] = (
+            "sum over sources of rank/listed_count for listed terms and 1.0 "
+            "for absent terms; lower is better (not se_specificity)"
+        )
+        manifest["per_source"] = [
+            {
+                "name": source.name,
+                "documents": source.documents,
+                "tokens": source.total_tokens,
+                "listed": sum(1 for df in source.df.values() if df >= min_df),
+            }
+            for source in sources
+        ]
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_ranking_json(output_dir / "ranking.json", ranking)
@@ -331,6 +433,15 @@ def build_parser() -> argparse.ArgumentParser:
             f"(default: {DEFAULT_MIN_DF})"
         ),
     )
+    parser.add_argument(
+        "--ranking-method",
+        choices=RANKING_METHODS,
+        default="pooled",
+        help=(
+            "pooled scores the concatenated corpus (default); borda fuses "
+            "per-source specificity rankings grouped by source_family"
+        ),
+    )
     return parser
 
 
@@ -349,6 +460,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.snapshot_id,
             alpha=args.alpha,
             min_df=args.min_df,
+            ranking_method=args.ranking_method,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

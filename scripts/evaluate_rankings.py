@@ -43,6 +43,8 @@ from wordfreq import word_frequency
 from vocabops.fusion import (
     SourceStats,
     borda_scores,
+    borda_scores_common_penalty,
+    borda_scores_percentile,
     geometric_mean_specificity,
     mean_specificity,
     min_specificity,
@@ -227,6 +229,12 @@ def build_methods(
         for term in pooled_terms
     }
     borda = borda_scores(pooled_terms, sources, MIN_DF, general_frequency)
+    borda_common = borda_scores_common_penalty(
+        pooled_terms, sources, MIN_DF, general_frequency
+    )
+    borda_pct = borda_scores_percentile(
+        pooled_terms, sources, MIN_DF, general_frequency
+    )
 
     presence_two = present_in_at_least(pooled_terms, sources, 2)
     restrict_scores = {term: pooled_scores[term] for term in presence_two}
@@ -255,6 +263,20 @@ def build_methods(
                 "terms)."
             ),
         },
+        "E1 common penalty": {
+            "rows": rank_rows(borda_common, lower_is_better=True),
+            "definition": (
+                "Sum of per-source ranks; absence costs max(listed)+1 in every "
+                "source, so the absence penalty is equalized."
+            ),
+        },
+        "E2 percentile": {
+            "rows": rank_rows(borda_pct, lower_is_better=True),
+            "definition": (
+                "Percentile Borda: per-source contribution is rank/listed for a "
+                "listed term and 1.0 for an absent term; sum, lower is better."
+            ),
+        },
         "M4 pooled+presence": {
             "rows": rank_rows(restrict_scores),
             "definition": (
@@ -274,6 +296,11 @@ def build_methods(
         "shift": shift,
         "pooled_rows": len(pooled_terms),
         "union_vocab_size": len(union_terms),
+        "borda_common_penalty": max(
+            sum(1 for df in source.df.values() if df >= MIN_DF)
+            for source in sources
+        )
+        + 1,
         "per_source_eligible": {
             source.name: sum(1 for df in source.df.values() if df >= MIN_DF)
             for source in sources

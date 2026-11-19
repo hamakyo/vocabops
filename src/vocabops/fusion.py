@@ -57,6 +57,8 @@ __all__ = [
     "geometric_mean_specificity",
     "source_rank",
     "borda_scores",
+    "borda_scores_common_penalty",
+    "borda_scores_percentile",
     "presence_count",
     "present_in_at_least",
 ]
@@ -196,6 +198,56 @@ def borda_scores(
     for term in terms:
         scores[term] = sum(
             ranks.get(term, listed + 1) for ranks, listed in per_source
+        )
+    return scores
+
+
+def borda_scores_common_penalty(
+    terms: Iterable[str],
+    sources: Sequence[SourceStats],
+    min_df: int,
+    general_frequency: GeneralFrequency = _default_general_frequency,
+) -> dict[str, int]:
+    """Borda sum where absence costs the same in every source.
+
+    The penalty is ``max(listed) + 1`` over the sources, so an absent term sits
+    below every listed term of every source and the list-length asymmetry of
+    :func:`borda_scores` disappears (E1). Lower is better.
+    """
+    _require_sources(sources)
+    per_source = [source_rank(s, min_df, general_frequency) for s in sources]
+    penalty = max(listed for _, listed in per_source) + 1
+    scores: dict[str, int] = {}
+    for term in terms:
+        scores[term] = sum(
+            ranks.get(term, penalty) for ranks, _ in per_source
+        )
+    return scores
+
+
+def borda_scores_percentile(
+    terms: Iterable[str],
+    sources: Sequence[SourceStats],
+    min_df: int,
+    general_frequency: GeneralFrequency = _default_general_frequency,
+) -> dict[str, float]:
+    """Percentile Borda: each source contributes ``rank / listed`` or ``1.0``.
+
+    A listed term's contribution is its fractional position in that source's
+    list; an absent term contributes the maximum, 1.0. The three contributions
+    are summed, so a term at the top of every source approaches 0 and one
+    listed nowhere scores 3.0. Scale-free in list length (E2). Lower is better.
+    """
+    _require_sources(sources)
+    per_source = [source_rank(s, min_df, general_frequency) for s in sources]
+    for _, listed in per_source:
+        if listed == 0:
+            raise ValueError("percentile Borda needs at least one listed term")
+    scores: dict[str, float] = {}
+    for term in terms:
+        scores[term] = sum(
+            ranks[term] / listed if term in ranks else 1.0
+            for ranks, listed in per_source
         )
     return scores
 

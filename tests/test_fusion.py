@@ -15,6 +15,8 @@ import pytest
 from vocabops.fusion import (
     SourceStats,
     borda_scores,
+    borda_scores_common_penalty,
+    borda_scores_percentile,
     geometric_mean_specificity,
     mean_specificity,
     min_specificity,
@@ -179,6 +181,83 @@ def test_borda_absent_terms_tie_below_every_listed_term():
 def test_borda_lower_is_better_for_terms_listed_in_more_sources():
     scores = borda_scores(["shared", "gamma"], SOURCES, 3, frequency)
     assert scores["shared"] < scores["gamma"]
+
+
+def test_common_penalty_is_the_same_for_every_absent_source():
+    ranks_a, listed_a = source_rank(A, 4, frequency)
+    ranks_b, listed_b = source_rank(B, 4, frequency)
+    ranks_c, listed_c = source_rank(C, 4, frequency)
+    penalty = max(listed_a, listed_b, listed_c) + 1
+    scores = borda_scores_common_penalty(
+        ["alpha", "gamma", "shared"], SOURCES, 4, frequency
+    )
+    # ``alpha`` is absent from b and c: both absences cost ``penalty``, even
+    # though b's and c's own lists have different lengths.
+    assert scores["alpha"] == ranks_a["alpha"] + 2 * penalty
+    assert scores["gamma"] == 2 * penalty + ranks_b["gamma"]
+    assert scores["shared"] == (
+        ranks_a["shared"] + ranks_b["shared"] + penalty
+    )
+    assert penalty == 3
+
+
+def test_common_penalty_differs_from_raw_borda_on_unequal_lists():
+    ranks_a, listed_a = source_rank(A, 4, frequency)
+    ranks_b, listed_b = source_rank(B, 4, frequency)
+    ranks_c, listed_c = source_rank(C, 4, frequency)
+    raw = borda_scores(["gamma"], SOURCES, 4, frequency)["gamma"]
+    common = borda_scores_common_penalty(["gamma"], SOURCES, 4, frequency)["gamma"]
+    # gamma is absent from a and c; raw charges each list's own length, E1 a
+    # single common penalty (the longest list + 1).
+    assert raw == (listed_a + 1) + ranks_b["gamma"] + (listed_c + 1)
+    assert common == 2 * (max(listed_a, listed_b, listed_c) + 1) + ranks_b["gamma"]
+    assert raw != common
+
+
+def test_percentile_borda_is_rank_over_listed_and_one_for_absence():
+    ranks_a, listed_a = source_rank(A, 4, frequency)
+    ranks_b, listed_b = source_rank(B, 4, frequency)
+    ranks_c, listed_c = source_rank(C, 4, frequency)
+    scores = borda_scores_percentile(
+        ["alpha", "gamma", "shared"], SOURCES, 4, frequency
+    )
+    assert scores["shared"] == pytest.approx(
+        ranks_a["shared"] / listed_a
+        + ranks_b["shared"] / listed_b
+        + 1.0
+    )
+    assert scores["gamma"] == pytest.approx(
+        1.0 + ranks_b["gamma"] / listed_b + 1.0
+    )
+    assert scores["alpha"] == pytest.approx(
+        ranks_a["alpha"] / listed_a + 1.0 + 1.0
+    )
+    # Lower is better; the term listed by two sources wins, and a term that is
+    # absent everywhere else cannot score above 3.0.
+    assert scores["shared"] < scores["alpha"]
+    assert scores["alpha"] == pytest.approx(3.0)
+
+
+def test_percentile_contribution_is_bounded_regardless_of_list_length():
+    # Every per-source contribution lies in (0, 1]: a listed term at rank r of
+    # n contributes r/n, an absent term exactly 1.0. No source's list length can
+    # add a fixed number of points, which is the asymmetry E1 corrects.
+    long_source = SourceStats(
+        name="long",
+        tf={"x": 5, **{f"t{i}": 1 for i in range(30)}},
+        df={"x": 2, **{f"t{i}": 2 for i in range(30)}},
+        total_tokens=200,
+        vocab_size=40,
+    )
+    absent = borda_scores_percentile(["missing"], [long_source], 2, frequency)
+    assert absent["missing"] == pytest.approx(1.0)
+    listed = borda_scores_percentile(["x"], [long_source], 2, frequency)["x"]
+    assert 0.0 < listed <= 1.0
+
+
+def test_percentile_borda_requires_a_listed_term_per_source():
+    with pytest.raises(ValueError):
+        borda_scores_percentile(["alpha"], SOURCES, 10, frequency)
 
 
 def test_presence_count_and_filter():
