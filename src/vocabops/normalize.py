@@ -212,9 +212,22 @@ LEMMA_MIN_FREQUENCY = 3e-07
 # bypasses the ratio test: the zero-frequency dedup family ("deduped" ->
 # "dedup", both 0.0) has no ratio to judge, and attestation governs there.
 #
-# The guard applies to every candidate acceptance, including attested ones:
-# corpus attestation must not override it, because ``ceil`` is attested as a
-# function name for the same reason it is a bad lemma for ``ceiling``.
+# Exemption: the ratio test is skipped when the candidate's wordfreq is exactly
+# 0.0 *and* the candidate is corpus-attested. That class is the technical
+# headword the attestation mechanism exists for: "webhook", "untrack",
+# "unassign", "paginate", "precompute" and "prefill" are wordfreq 0.0, so their
+# ratio is 0 and an unconditional guard rejected every one. The Part 6 audit
+# measured the cost: 23 real merges (393 occurrences) were collateral, 20 of
+# them into zero-frequency attested candidates. Zero frequency is the only case
+# exempted, because such a candidate can only have been accepted through
+# attestation (it fails the 3e-07 floor), and attestation already requires the
+# form standalone in >= 3 documents. Every intended block sits above 0.0 and
+# stays guarded: "alway" 3.89e-07, "spe" 5.75e-07, "ceil" 7.24e-08, "serie"
+# 2.14e-06, "morn" 1.12e-06, "physic" 3.16e-07.
+#
+# Otherwise the guard applies to every candidate acceptance, including attested
+# ones: corpus attestation must not override it, because ``ceil`` is attested as
+# a function name for the same reason it is a bad lemma for ``ceiling``.
 #
 # Known non-goal: "unbounded" -> "unbound" has ratio 2.04 because both are real
 # words; the guard cannot and should not block it.
@@ -379,12 +392,14 @@ def lemmatize(token: str, attested: frozenset[str] = frozenset()) -> str:
     passed in as ``attested``). Every accepted candidate must also pass the
     bare-stem ratio guard: when the token itself has a nonzero wordfreq, the
     candidate's frequency must be at least
-    :data:`MIN_CANDIDATE_FREQUENCY_RATIO` of it. Among surviving candidates the
-    most frequent wins, so a wordfreq-valid candidate always beats an
-    attested-only one with lower frequency; attestation only decides when no
-    wordfreq-valid candidate exists. If no candidate survives, the original
-    token is returned, because a real inflected word is always a safer answer
-    than an invented stem.
+    :data:`MIN_CANDIDATE_FREQUENCY_RATIO` of it. The one exemption is a
+    candidate whose wordfreq is exactly 0.0 that the corpus attests: its ratio
+    is 0 by construction, so attestation is the evidence that governs it. Among
+    surviving candidates the most frequent wins, so a wordfreq-valid candidate
+    always beats an attested-only one with lower frequency; attestation only
+    decides when no wordfreq-valid candidate exists. If no candidate survives,
+    the original token is returned, because a real inflected word is always a
+    safer answer than an invented stem.
 
     ``attested`` defaults to the empty set, which reproduces the pure
     single-token behaviour for callers without a corpus: the corpus pre-pass is
@@ -412,9 +427,14 @@ def lemmatize(token: str, attested: frozenset[str] = frozenset()) -> str:
         if frequency >= LEMMA_MIN_FREQUENCY or candidate in attested:
             # Bare-stem guard: a candidate far rarer than the token it came
             # from is a fragment, not a lemma. Tokens at wordfreq 0 have no
-            # ratio to test; attestation decides for that family.
+            # ratio to test; attestation decides for that family. The same is
+            # true of candidates at wordfreq 0 that the corpus attests: their
+            # ratio is 0 by definition, so the ratio test cannot judge them and
+            # attestation (>= 3 documents) is the evidence instead.
+            exempt = frequency == 0.0 and candidate in attested
             if (
-                token_frequency > 0
+                not exempt
+                and token_frequency > 0
                 and frequency / token_frequency < MIN_CANDIDATE_FREQUENCY_RATIO
             ):
                 continue

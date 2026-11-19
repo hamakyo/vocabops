@@ -368,6 +368,41 @@ def test_attestation_does_not_override_the_ratio_guard():
     assert lemmatize("ceiling", attested) == "ceiling"
 
 
+def test_attested_zero_frequency_candidates_merge_again():
+    # Part 6 measured 23 real merges lost because the candidate is wordfreq
+    # 0.0, so the ratio guard saw 0 and rejected it. The exemption restores the
+    # attested ones: zero-frequency candidate, corpus-attested headword.
+    assert lemmatize("webhooks", frozenset({"webhook"})) == "webhook"
+    assert lemmatize("untracked", frozenset({"untrack"})) == "untrack"
+    assert lemmatize("paginated", frozenset({"paginate"})) == "paginate"
+    assert lemmatize("unassigned", frozenset({"unassign"})) == "unassign"
+
+
+def test_zero_frequency_candidate_is_never_accepted_without_attestation():
+    # The exemption governs only attested candidates. A wordfreq-0.0 candidate
+    # still fails the 3e-07 floor, so an unattested one cannot be accepted.
+    assert lemmatize("webhooks") == "webhooks"
+    assert lemmatize("untracked") == "untracked"
+    assert lemmatize("paginated") == "paginated"
+    assert lemmatize("unassigned") == "unassigned"
+
+
+def test_exemption_does_not_cover_nonzero_frequency_candidates():
+    # Every intended block has a nonzero candidate frequency, so attesting the
+    # candidate cannot reopen it: the ratio guard still applies.
+    assert lemmatize("always", frozenset({"alway"})) == "always"  # 3.89e-07
+    assert lemmatize("speed", frozenset({"spe"})) == "speed"  # 5.75e-07
+    assert lemmatize("ceiling", frozenset({"ceil"})) == "ceiling"  # 7.24e-08
+    assert lemmatize("series", frozenset({"serie"})) == "series"  # 2.14e-06
+
+
+def test_dedup_family_is_unchanged_by_the_exemption():
+    attested = frozenset({"dedup"})
+    assert lemmatize("deduped", attested) == "dedup"
+    assert lemmatize("deduping", attested) == "dedup"
+    assert lemmatize("dedups", attested) == "dedup"
+
+
 def test_guard_keeps_real_merges_on_both_validation_paths():
     # Wordfreq-valid merges above the threshold still merge.
     assert lemmatize("credentials") == "credential"
