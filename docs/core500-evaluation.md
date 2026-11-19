@@ -1519,3 +1519,31 @@ weighting policy before its top 500 can be presented as software-engineering
 English.
 
 
+
+# Part 9 — candidate ranking methods
+
+**Status: offline decision, no release.** Part 8 left the combined ranking
+source-dominated and named source balancing or per-source rate normalization as
+the next experiment. This part evaluates six ranking methods on the same
+three-source corpus, using per-source counts built with the pipeline's own
+normalization and an attested set built from the combined corpus.
+
+- Methods: M0 pooled (baseline), M1 mean per-source specificity, M2 minimum
+  per-source specificity, M3 Borda fusion, M4 pooled with a two-source presence
+  gate, M5 geometric mean of shifted per-source scores. Definitions, absent-term
+  handling and the positive shift (8.623521) are in
+  [ranking-evaluation.md](ranking-evaluation.md).
+- Sanity: pooled counts reproduce `out/combined-rank-v1-df10` exactly — 9,463
+  rows, top-100 `tf`/`df` exact, identical ordering, and view recovery 63 / 98
+  matching Part 8. Failed checks abort the evaluation.
+- Verdict: **M3 Borda is recommended.** Target median rank 606.5 against
+  pooled's 2,930.5; three targets in the top 500 against none; GH-vocabulary
+  recovery 168 / 219 against 63 / 98; 55 of the top 100 carry bucket (a) or (c)
+  against 15; five of six artifacts fall below 1,000. Its costs: `param` stays
+  at 31, 41 of its top 100 are bucket (b) technical nouns, and the absent-term
+  penalty is asymmetric by source list length (6,139 / 5,167 / 2,527) and should
+  be equalized before any view is built on it.
+
+The measurement changes no pipeline score, rebuilds no view, and starts no
+corpus work; the implementation is a later round. Full tables and per-method
+top-20 lists: [ranking-evaluation.md](ranking-evaluation.md).
