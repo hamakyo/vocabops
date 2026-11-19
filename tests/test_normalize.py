@@ -1,6 +1,13 @@
 """Unit tests for vocabops.normalize."""
 
-from vocabops.normalize import clean_text, lemmatize, normalize, tokenize
+from vocabops.ingest import ENGLISH_RATIO_MIN_FREQUENCY
+from vocabops.normalize import (
+    LEMMA_MIN_FREQUENCY,
+    clean_text,
+    lemmatize,
+    normalize,
+    tokenize,
+)
 
 
 def test_fenced_code_blocks_are_removed():
@@ -177,9 +184,18 @@ def test_lemmatize_leaves_unchanged_alone_instead_of_inventing_a_stem():
     assert lemmatize("unchanged") == "unchanged"
 
 
+def test_lemmatize_floor_is_pinned_and_distinct_from_the_ratio_floor():
+    # The lemmatizer asks "is this candidate a plausible headword?"; the ingest
+    # ratio test asks "is this token evidence that the document is English?".
+    # They are separate constants and must not collapse back into one value.
+    assert LEMMA_MIN_FREQUENCY == 3e-07
+    assert ENGLISH_RATIO_MIN_FREQUENCY == 1e-06
+    assert LEMMA_MIN_FREQUENCY != ENGLISH_RATIO_MIN_FREQUENCY
+
+
 def test_lemmatize_merges_inflections_below_the_old_floor():
-    # The shared floor is 3e-07. These lemmas were below the old 1e-06 floor
-    # ("fallback" 4.57e-07, "retry" 3.72e-07, "credential" 5.62e-07,
+    # The lemmatizer floor is 3e-07. These lemmas were below the old 1e-06
+    # floor ("fallback" 4.57e-07, "retry" 3.72e-07, "credential" 5.62e-07,
     # "encode" 8.91e-07), so their inflections used to survive as separate rows.
     assert lemmatize("fallbacks") == "fallback"
     assert lemmatize("encoded") == "encode"

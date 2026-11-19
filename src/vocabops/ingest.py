@@ -40,7 +40,10 @@ skipped. Two opt-in ingest filters remove automated and non-English text:
 
 ``--min-english-ratio R``
     Drop documents whose share of alphabetic tokens known to ``wordfreq`` as
-    English is below ``R`` (0..1). Documents with no alphabetic tokens are
+    English is below ``R`` (0..1). A token counts as English at
+    :data:`ENGLISH_RATIO_MIN_FREQUENCY` (1e-06), which is deliberately
+    stricter than the lemmatizer's ``LEMMA_MIN_FREQUENCY`` (3e-07): the two
+    answer different questions. Documents with no alphabetic tokens are
     skipped as empty. Off by default (``None``).
 
 Filter order is fixed: event-type/body extraction, then bot filter, then
@@ -85,7 +88,7 @@ from urllib.request import Request, urlopen
 
 from wordfreq import word_frequency
 
-from vocabops.normalize import ENGLISH_WORD_MIN_FREQUENCY, tokenize
+from vocabops.normalize import tokenize
 
 __all__ = [
     "GHARCHIVE_FAMILY",
@@ -93,7 +96,7 @@ __all__ = [
     "USER_AGENT",
     "BOT_LOGIN_SUFFIX",
     "BOT_LOGINS",
-    "ENGLISH_WORD_MIN_FREQUENCY",
+    "ENGLISH_RATIO_MIN_FREQUENCY",
     "document_id",
     "english_ratio",
     "extract_document",
@@ -114,6 +117,20 @@ GZIP_MAGIC = b"\x1f\x8b"
 # listed explicitly so the suffix rule stays the general one.
 BOT_LOGIN_SUFFIX = "[bot]"
 BOT_LOGINS = frozenset({"Copilot"})
+
+# The document-level language test's floor: a token counts as evidence that the
+# document is English only when its wordfreq English frequency is at or above
+# this value. It answers a different question from the lemmatizer's
+# ``vocabops.normalize.LEMMA_MIN_FREQUENCY`` ("is this candidate a plausible
+# headword?", 3e-07) and is deliberately stricter.
+#
+# The two questions must not share a value. Round 8 measured why: at the
+# lemmatizer's 3e-07, wordfreq's English list already counts Spanish and
+# French tokens such as ``esta`` 6.9e-07 and ``cette`` 1.8e-07, so the ratio
+# test admitted 284 extra FR/ES documents, and non-English rows in the top 500
+# rose from 14 to 78. At 1e-06 the test behaved as measured in round 5: every
+# Spanish and Portuguese document dropped from the 1-hour corpus.
+ENGLISH_RATIO_MIN_FREQUENCY = 1e-06
 
 
 def document_id(source_family: str, identifier: str) -> str:
@@ -188,20 +205,23 @@ def is_bot_actor(login: str | None) -> bool:
 def _is_english_word(token: str) -> bool:
     """Whether ``wordfreq`` knows ``token`` as a real English word (cached).
 
-    Uses the shared :data:`vocabops.normalize.ENGLISH_WORD_MIN_FREQUENCY`
-    floor, not mere nonzero presence: wordfreq lists many Spanish and
-    Portuguese words at trace frequencies (``código`` 1.7e-08), and counting
-    those as English let non-English documents pass the ratio filter.
+    Uses :data:`ENGLISH_RATIO_MIN_FREQUENCY`, not mere nonzero presence and not
+    the lemmatizer's floor: wordfreq lists many Spanish, French and Portuguese
+    words at trace frequencies (``código`` 1.7e-08) and also between 3e-07 and
+    1e-06 (``esta`` 6.9e-07), and counting those as English let non-English
+    documents pass the ratio filter.
     """
-    return word_frequency(token, "en") >= ENGLISH_WORD_MIN_FREQUENCY
+    return word_frequency(token, "en") >= ENGLISH_RATIO_MIN_FREQUENCY
 
 
 def english_ratio(text: str) -> float | None:
     """Share of alphabetic tokens that are real English words.
 
     A token counts when its wordfreq English frequency is at least
-    :data:`ENGLISH_WORD_MIN_FREQUENCY`. Returns ``None`` when the text has no
-    alphabetic tokens at all, so the caller can treat such a document as empty.
+    :data:`ENGLISH_RATIO_MIN_FREQUENCY` (1e-06), a stricter test than the
+    lemmatizer's :data:`vocabops.normalize.LEMMA_MIN_FREQUENCY` (3e-07).
+    Returns ``None`` when the text has no alphabetic tokens at all, so the
+    caller can treat such a document as empty.
     """
     tokens = [token for token in tokenize(text) if token.isalpha()]
     if not tokens:

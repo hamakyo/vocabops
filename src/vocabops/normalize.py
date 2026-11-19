@@ -29,7 +29,7 @@ from wordfreq import word_frequency
 __all__ = [
     "STOPWORDS",
     "IRREGULAR_LEMMAS",
-    "ENGLISH_WORD_MIN_FREQUENCY",
+    "LEMMA_MIN_FREQUENCY",
     "clean_text",
     "tokenize",
     "lemmatize",
@@ -153,10 +153,16 @@ STOPWORDS: frozenset[str] = frozenset(
 
 _VOWELS = frozenset("aeiou")
 
-# The shared "real English word" floor: a token or generated lemma counts as
-# English only when its wordfreq English frequency is at or above this value.
-# Both the lemmatizer below and the English-ratio filter in ``ingest.py`` use
-# this one constant, so the two thresholds cannot drift apart.
+# The lemmatizer's "is this candidate a plausible English headword?" floor: a
+# generated lemma counts as real only when its wordfreq English frequency is at
+# or above this value.
+#
+# This is *not* the same question as the ingest English-ratio test ("is this
+# token evidence that the document is English?"), which has its own constant,
+# ``vocabops.ingest.ENGLISH_RATIO_MIN_FREQUENCY``. Sharing one value between
+# the two questions caused the round-8 regression: at 3e-07 the document test
+# accepted French and Spanish words and 284 extra FR/ES documents entered the
+# day corpus, taking non-English rows in the top 500 from 14 to 78.
 #
 # The value sits an order of magnitude above wordfreq's noise floor for
 # non-words (e.g. "merg" 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08, "código"
@@ -170,7 +176,7 @@ _VOWELS = frozenset("aeiou")
 # "always" -> "alway" (3.89e-07), "speed" -> "spe" (5.75e-07) and "unbounded"
 # -> "unbound" (7.08e-07). Those three are accepted, documented defects; the
 # suffix rules have no guard against them (see docs/prototype.md).
-ENGLISH_WORD_MIN_FREQUENCY = 3e-07
+LEMMA_MIN_FREQUENCY = 3e-07
 
 
 def clean_text(text: str) -> str:
@@ -290,10 +296,9 @@ def lemmatize(token: str) -> str:
 
     Order of operations: irregular map, candidate generation from the suffix
     rules, then validation against ``wordfreq``. A candidate is accepted only
-    when its English frequency is at least :data:`ENGLISH_WORD_MIN_FREQUENCY`
-    (the same "real English word" floor the ingest English-ratio filter uses);
-    among accepted candidates the most frequent wins. If no candidate survives,
-    the original token is returned, because a real inflected word is always a
+    when its English frequency is at least :data:`LEMMA_MIN_FREQUENCY`; among
+    accepted candidates the most frequent wins. If no candidate survives, the
+    original token is returned, because a real inflected word is always a
     safer answer than an invented stem.
 
     The original token is never compared against the candidates: an inflected
@@ -313,7 +318,7 @@ def lemmatize(token: str) -> str:
     best_frequency = 0.0
     for candidate in sorted(_derived_candidates(token)):
         frequency = _frequency(candidate)
-        if frequency >= ENGLISH_WORD_MIN_FREQUENCY and frequency > best_frequency:
+        if frequency >= LEMMA_MIN_FREQUENCY and frequency > best_frequency:
             best = candidate
             best_frequency = frequency
     return best if best is not None else token
