@@ -139,8 +139,9 @@ def test_ingest_extracts_deduplicates_and_skips(tmp_path):
         document_id("gharchive", event_id) for event_id in EXPECTED_TEXTS
     ]
     assert [doc["text"] for doc in documents] == list(EXPECTED_TEXTS.values())
-    assert set(documents[0]) == {"doc_id", "source_family", "repo", "text"}
+    assert set(documents[0]) == {"doc_id", "source_family", "repo", "actor", "text"}
     assert all(doc["source_family"] == "gharchive" for doc in documents)
+    assert all(doc["actor"] is None for doc in documents)
     assert documents[0]["repo"] == "acme/widgets"
 
 

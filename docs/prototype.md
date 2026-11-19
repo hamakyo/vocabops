@@ -120,7 +120,7 @@ Which events become documents:
 | `PullRequestReviewCommentEvent` | `payload.comment.body` |
 | `PullRequestReviewEvent` | `payload.review.body` |
 
-Every other event type is skipped. A document requires a non-empty body; empty and whitespace-only bodies are skipped, and there is no bot or template filter. Each record is `{doc_id, source_family, repo, text}`, where `doc_id = sha256("gharchive/" + event id)` and duplicate event IDs are dropped. The adapter stops at `--max-docs` (default 2000).
+Every other event type is skipped. A document requires a non-empty body; empty and whitespace-only bodies are skipped. Each record is `{doc_id, source_family, repo, actor, text}`, where `doc_id = sha256("gharchive/" + event id)`, `actor` is the event actor's login (or `null`), and duplicate event IDs are dropped. The adapter stops at `--max-docs` (default 2000).
 
 The pipeline reads such a JSONL file directly:
 
@@ -203,6 +203,115 @@ Target-term positions with `min_df = 3` (4,235 → 4,146 rows):
 
 Most terms keep their frequency and move up only because the vocabulary is smaller. `fallback` loses five occurrences because `fallbacks` no longer merges into it: `fallback` itself is below the `1e-06` validation threshold (4.57e-07), so its plural is returned unchanged and appears as its own row (`fallbacks`, `tf` 5, `df` 3).
 
+## Bot and non-English filters at ingest
+
+Two opt-in ingest flags remove automation and non-English prose before anything reaches the pipeline. Both are off by default, so the plain command still writes every text-bearing event.
+
+- `--exclude-bots` — drop the event when the actor login ends with `[bot]`, or when it is in the explicit `BOT_LOGINS` set. That set currently holds only `Copilot`, GitHub's Copilot bot account, which carries no suffix. A login that merely contains `bot` (`botanist`, `robotfan`) is a human account and is kept.
+- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total` where a token is known when `word_frequency(token, "en") > 0`. Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
+
+Both filters run at fixed positions: event-type/body extraction, then bot filter, then language filter, then event-ID checks, deduplication and `--max-docs`. Every dropped event lands in exactly one counter, and `ingest()` returns them all: `events_seen`, `documents_written`, `skipped_no_body`, `skipped_bot`, `skipped_language`, `skipped_no_tokens`, `duplicates`, `malformed`, `missing_id`. Neither flag touches normalization, the lemmatizer, `se_specificity`, or the ranking; exclusion happens only here.
+
+### Filtered real run
+
+```bash
+.venv/bin/python -m vocabops.ingest gharchive \
+  --input out/gharchive/2026-11-18-3.json.gz \
+  --output out/gharchive/documents-filtered.jsonl \
+  --max-docs 2000 --exclude-bots --min-english-ratio 0.6
+
+.venv/bin/python -m vocabops.pipeline \
+  --input out/gharchive/documents-filtered.jsonl \
+  --output out/gharchive-rank-df3-filtered \
+  --snapshot-id gharchive-2026-11-18-3-proto --min-df 3
+```
+
+Counters over the same 3,319 events:
+
+| counter | count |
+| --- | --- |
+| events seen | 3,319 |
+| documents written | 740 |
+| skipped: no body | 1,874 |
+| skipped: bot actor | 603 (583 `[bot]` logins + 20 `Copilot`) |
+| skipped: below english ratio | 101 |
+| skipped: no alphabetic tokens | 1 |
+
+The totals close: 3,319 − 1,874 − 603 − 101 − 1 = 740. The filtered corpus is 740 documents and 118,572 normalized tokens; the `min_df = 3` ranking has 2,938 rows (10,529 at `min_df = 1`), down from 4,146. Re-running ingest and pipeline produced byte-identical files.
+
+The old top 10 was mostly automation, non-English text and config noise. `xhigh` (old 1), `coderabbit` (old 2), `opencode` (old 5), `pukujan` (old 6), `また` (old 8) and `初筛` (old 10) are all absent; `18t03` falls from 4 to 19 (`tf` 47 → 11) and `vercel` from 7 to 35 (`tf` 9). The two survivors from that top 10 are genuine infrastructure vocabulary: `sha256` (3 → 1) and `worktree` (9 → 3). The rest of the top 30 is product and infrastructure vocabulary (`frontmatter`, `stacksjs`, `namespace`, `docstring`) plus Latin-script non-English, discussed below.
+
+Top 30 of the filtered `min_df = 3` ranking, with the position the same term held in `out/gharchive-rank-df3-lemma2` (`-` means it was below the 4,146-row cut):
+
+| # | term | tf | df | old # |
+| --- | --- | --- | --- | --- |
+| 1 | `sha256` | 50 | 7 | 3 |
+| 2 | `frontmatter` | 25 | 25 | 12 |
+| 3 | `worktree` | 24 | 13 | 9 |
+| 4 | `stacksjs` | 23 | 18 | 15 |
+| 5 | `repositório` | 21 | 4 | 19 |
+| 6 | `004b` | 20 | 20 | 21 |
+| 7 | `groupable` | 20 | 20 | 22 |
+| 8 | `código` | 34 | 12 | 18 |
+| 9 | `namespace` | 665 | 28 | 31 |
+| 10 | `fluxo` | 17 | 6 | 28 |
+| 11 | `pruebas` | 17 | 5 | 23 |
+| 12 | `referencia` | 16 | 6 | 33 |
+| 13 | `namespaces` | 180 | 20 | 34 |
+| 14 | `aceptación` | 15 | 15 | 35 |
+| 15 | `criterios` | 14 | 14 | 44 |
+| 16 | `regra` | 14 | 5 | 45 |
+| 17 | `validación` | 14 | 4 | 46 |
+| 18 | `rustsec` | 13 | 3 | 56 |
+| 19 | `18t03` | 11 | 7 | 4 |
+| 20 | `docstring` | 11 | 5 | 11 |
+| 21 | `verificar` | 11 | 4 | 66 |
+| 22 | `selección` | 12 | 3 | 81 |
+| 23 | `contexto` | 11 | 6 | 54 |
+| 24 | `contrato` | 13 | 4 | 82 |
+| 25 | `critérios` | 10 | 8 | 62 |
+| 26 | `mantener` | 10 | 3 | 86 |
+| 27 | `origem` | 10 | 4 | 87 |
+| 28 | `userlibs` | 10 | 5 | 90 |
+| 29 | `aprobado` | 9 | 5 | 155 |
+| 30 | `arquitetura` | 9 | 4 | 156 |
+
+Target-term positions with `min_df = 3` (4,146 → 2,938 rows). `retrieve` and `invalidate` fall below the cut because their document frequency drops to 2 and 1; the `min_df = 1` columns show they are still in the corpus.
+
+| term | old rank | new rank | old tf / df | new tf / df | new rank at `min_df = 1` |
+| --- | --- | --- | --- | --- | --- |
+| `retrieve` | 2,851 | — | 4 / 3 | 3 / 2 | 7,981 |
+| `persist` | 1,753 | 1,016 | 19 / 14 | 13 / 9 | 6,353 |
+| `invoke` | 1,667 | 1,194 | 14 / 14 | 5 / 5 | 6,734 |
+| `propagate` | 1,777 | 1,119 | 6 / 5 | 3 / 3 | 6,582 |
+| `reproduce` | 1,255 | 581 | 86 / 68 | 77 / 61 | 5,272 |
+| `invalidate` | 1,744 | — | 5 / 4 | 2 / 1 | 6,665 |
+| `fallback` | 713 | 258 | 119 / 69 | 84 / 53 | 3,883 |
+| `underlying` | 3,374 | 2,337 | 5 / 5 | 3 / 3 | 9,091 |
+
+Every target term loses raw frequency because automated prose was a large share of the corpus (1,445 → 740 documents, 199,202 → 118,572 tokens), and ranks improve mainly because the vocabulary shrinks (4,146 → 2,938 rows).
+
+### Residual automation and Latin-script non-English
+
+The filters are login- and token-membership-based, not classifier-based, so the filtered corpus still contains automation that has no `[bot]` suffix. Top 10 actors by document count in `out/gharchive/documents-filtered.jsonl`:
+
+| documents | actor |
+| --- | --- |
+| 20 | `atolis-hq-agent` |
+| 18 | `chrisbbreuer` |
+| 18 | `gokselozgur5` |
+| 14 | `joshbruh-lang` |
+| 8 | `donovanrost` |
+| 7 | `FredApps` |
+| 5 | `fubar-coder` |
+| 5 | `CompleteDotTech` |
+| 5 | `ventura8` |
+| 4 | `viniciussucupira` |
+
+`atolis-hq-agent` is an agent account: all 20 documents are templated design/plan prose ("Design: namespaces with pack-defined kinds … ## Status"). It survives because it carries no `[bot]` suffix and is not in `BOT_LOGINS`. Adding accounts like it is a manual edit to that set, not a rule.
+
+The language filter reliably removes CJK text: the old `また` and `初筛` rows are gone, and no CJK term appears anywhere in the filtered ranking. It does not remove Latin-script non-English. `código` is still rank 8 (`tf` 34, `df` 12) and `repositório`, `pruebas`, `validación` and others remain in the top 30. The cause is the rule itself: `word_frequency(token, "en") > 0` counts a token as English at any nonzero frequency, and `wordfreq`'s English list contains Portuguese and Spanish function words and loanwords at tiny frequencies (`código` is 1.7e-08 in `en`). The 12 documents that still contain `código` score 0.656–0.791, above the 0.6 cut, because Portuguese `do`, `para`, `de`, `a`, `que`, `uma` and `por` all count as known English tokens. Raising the threshold would not fix it (the scores sit well above 0.6); a per-token English rate floor or script check would be the next step, and neither is in this round.
+
 ## Known limitations
 
 - **Fixture corpus only, plus one bounded GH Archive hour.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. The GH Archive adapter exists and one hour has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one hour of issue and pull-request prose is not a corpus.
@@ -210,6 +319,6 @@ Most terms keep their frequency and move up only because the vocabulary is small
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
 - **Thin smoothing.** With a corpus this small, `alpha = 1` and `vocab_size` in the denominator dominate absolute scores; only the ordering is meaningful. One-off rare words can outrank repeated target terms.
-- **Thin thresholds.** `--min-df` now provides a document-frequency floor, but there is no minimum term frequency, no boilerplate/bot down-ranking, and no stopword extension for product names, so automation text and rare one-off tokens still reach the top.
+- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors and low-English-ratio documents, but there is no minimum term frequency, no template/boilerplate filter, and no stopword extension for product names. Automation without a `[bot]` login (`atolis-hq-agent`) and Latin-script non-English (`código`) still reach the top.
 
 Reproducibility rules for runs of this pipeline are in [Pipeline conventions](pipeline-conventions.md).
