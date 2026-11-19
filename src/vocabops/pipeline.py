@@ -2,15 +2,32 @@
 
 Usage::
 
+    # directory of .txt documents (Phase 1 fixtures)
     python -m vocabops.pipeline \
         --input data/fixtures/sample_corpus \
         --output out/human-se-v0.1-proto \
         --snapshot-id human-se-v0.1-proto
 
-Every ``.txt`` file in the input directory is one document with
+    # JSONL documents produced by ``python -m vocabops.ingest``
+    python -m vocabops.pipeline \
+        --input out/gharchive/documents.jsonl \
+        --output out/gharchive-rank \
+        --snapshot-id gharchive-2026-11-18-3-proto \
+        --min-df 3
+
+Every ``.txt`` file in an input directory is one document with
 ``source_family = "fixture"``. Documents are assigned a stable ID derived from
 ``sha256(source_family + "/" + relative path)`` so that identity survives
 re-runs and file moves inside the corpus root are visible.
+
+When ``--input`` is a ``.jsonl`` file, every line is one document. Its
+``text`` field holds the body, its ``source_family`` field is preserved, and
+its ``doc_id`` is reused when present. The manifest's ``sources`` list is
+derived from the distinct source families actually present in the input.
+
+``--min-df N`` (default 1) drops terms that occur in fewer than ``N``
+documents from ``ranking.json`` and ``ranking.csv``. Frequencies and scores
+are still computed over the whole corpus; only the emitted rows are filtered.
 
 Outputs (written to the output directory):
 
@@ -42,6 +59,7 @@ __all__ = [
     "SOURCE_FAMILY",
     "document_id",
     "load_documents",
+    "load_jsonl_documents",
     "run",
     "main",
 ]
@@ -50,6 +68,7 @@ PIPELINE_VERSION = __version__
 SOURCE_FAMILY = "fixture"
 GENERAL_BASELINE = "wordfreq"
 SCORE_DECIMALS = 6
+DEFAULT_MIN_DF = 1
 
 
 def document_id(source_family: str, relative_path: str) -> str:
@@ -78,23 +97,81 @@ def load_documents(
     return documents
 
 
+def load_jsonl_documents(path: Path) -> list[tuple[str, str, list[str]]]:
+    """Read a JSONL document file as ``(document_id, source_family, lemmas)``.
+
+    Each line must be a JSON object with a non-empty string ``text`` and
+    ``source_family``. ``doc_id`` is reused when present, otherwise a stable ID
+    is derived from the source family and the 1-based line number, so the
+    fallback depends on position rather than on content.
+
+    Blank lines are ignored; anything else that fails to parse is an error
+    naming the line number.
+    """
+    documents: list[tuple[str, str, list[str]]] = []
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"{path}:{line_number}: expected a JSON object")
+
+            text = record.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"{path}:{line_number}: missing non-empty 'text'")
+            family = record.get("source_family")
+            if not isinstance(family, str) or not family.strip():
+                raise ValueError(
+                    f"{path}:{line_number}: missing non-empty 'source_family'"
+                )
+            family = family.strip()
+
+            doc_id = record.get("doc_id")
+            if not isinstance(doc_id, str) or not doc_id.strip():
+                doc_id = document_id(family, f"line/{line_number}")
+            documents.append((doc_id.strip(), family, normalize(text)))
+    return documents
+
+
+def _load_documents(path: Path) -> list[tuple[str, str, list[str]]]:
+    """Load either a ``.txt`` directory or a ``.jsonl`` document file."""
+    if path.is_dir():
+        records = load_documents(path)
+        return [(doc_id, SOURCE_FAMILY, lemmas) for doc_id, _, lemmas in records]
+    if path.is_file():
+        if path.suffix.lower() == ".jsonl":
+            return load_jsonl_documents(path)
+        raise ValueError(
+            f"unsupported input file {path}: expected a directory of .txt "
+            "documents or a .jsonl file"
+        )
+    raise FileNotFoundError(f"input not found: {path}")
+
+
 def run(
-    input_dir: Path,
+    input_path: Path,
     output_dir: Path,
     snapshot_id: str,
     alpha: float = ALPHA,
+    min_df: int = DEFAULT_MIN_DF,
 ) -> dict[str, object]:
     """Run the prototype pipeline and write ranking and manifest files."""
-    input_dir = Path(input_dir)
+    input_path = Path(input_path)
     output_dir = Path(output_dir)
-    if not input_dir.is_dir():
-        raise FileNotFoundError(f"input directory not found: {input_dir}")
+    if min_df < 1:
+        raise ValueError("min_df must be at least 1")
 
-    documents = load_documents(input_dir)
+    documents = _load_documents(input_path)
     if not documents:
-        raise ValueError(f"no .txt documents found in {input_dir}")
+        raise ValueError(f"no documents found in {input_path}")
 
-    rows = rank_terms([lemmas for _, _, lemmas in documents], alpha=alpha)
+    rows = rank_terms(
+        [lemmas for _, _, lemmas in documents], alpha=alpha, min_df=min_df
+    )
     ranking = [
         {
             "term": row["term"],
@@ -108,10 +185,11 @@ def run(
     manifest: dict[str, object] = {
         "snapshot_id": snapshot_id,
         "pipeline_version": PIPELINE_VERSION,
-        "sources": [SOURCE_FAMILY],
+        "sources": sorted({family for _, family, _ in documents}),
         "general_baseline": GENERAL_BASELINE,
         "documents": len(documents),
         "tokens": sum(len(lemmas) for _, _, lemmas in documents),
+        "min_df": min_df,
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         required=True,
         type=Path,
-        help="directory containing .txt documents (one document per file)",
+        help="directory of .txt documents or a .jsonl document file",
     )
     parser.add_argument(
         "--output",
@@ -172,6 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=ALPHA,
         help=f"additive smoothing constant (default: {ALPHA})",
     )
+    parser.add_argument(
+        "--min-df",
+        type=int,
+        default=DEFAULT_MIN_DF,
+        help=(
+            "exclude terms occurring in fewer than N documents "
+            f"(default: {DEFAULT_MIN_DF})"
+        ),
+    )
     return parser
 
 
@@ -180,8 +267,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.snapshot_id.strip():
         print("error: --snapshot-id must not be empty", file=sys.stderr)
         return 2
+    if args.min_df < 1:
+        print("error: --min-df must be at least 1", file=sys.stderr)
+        return 2
     try:
-        manifest = run(args.input, args.output, args.snapshot_id, alpha=args.alpha)
+        manifest = run(
+            args.input,
+            args.output,
+            args.snapshot_id,
+            alpha=args.alpha,
+            min_df=args.min_df,
+        )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -189,6 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"snapshot:  {manifest['snapshot_id']}")
     print(f"documents: {manifest['documents']}")
     print(f"tokens:    {manifest['tokens']}")
+    print(f"min_df:    {manifest['min_df']}")
     print(f"output:    {args.output}")
     return 0
 
