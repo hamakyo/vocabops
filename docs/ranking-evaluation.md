@@ -9,10 +9,11 @@ seven of the eight tracked target terms fall. This round implements five
 candidate ranking methods on the same corpus and scores all six (the baseline
 plus five) on metrics fixed before any number was computed.
 
-The result: **Borda fusion (M3) wins every fixed metric**, including target
-ranks and top-100 character, and is recommended as the ranking basis for the
-next round. It is not free — `param` stays at rank 31 and half its top 100 is
-still technical-noun vocabulary. Both facts are quantified below.
+The result: **Borda fusion (M3) wins the target, view-recovery and top-100
+character metrics outright, and suppresses five of six artifacts**, and is
+recommended as the ranking basis for the next round. It is not free — `param`
+stays at rank 31 and half its top 100 is still technical-noun vocabulary. Both
+facts are quantified below.
 
 ## Setup: per-source counts
 
@@ -175,8 +176,9 @@ hard (246) but it pays for that everywhere else.
 | M4 pooled+presence | 6 | 10 | 16 | 25 | 1 | 0 | 58 |
 | M5 geometric | 12 | 20 | 32 | 36 | 0 | 0 | 32 |
 
-M0's 15 a+c and 58 unclassified reproduce Part 8's "15 of 100" statement.
-Borda has the most transferable-vocabulary rows (55) and almost no unclassified
+M0's 15 a+c and 58 unclassified are the baseline this round was reacting to:
+the pooled top 100 is mostly terms the GH review never classified. Borda has the
+most transferable-vocabulary rows (55) and almost no unclassified
 rows (3): its head is drawn from terms the GH review already classified. It also
 has the most bucket (b) rows (41), so its head is still close to half technical
 nouns.
@@ -290,7 +292,7 @@ Reasoning, in the order the metrics were fixed:
 - Targets: the only method with targets in the top 500 (3) and the best median
   by a factor of ~3.6 (606.5 vs 2,172 for the runner-up).
 - View recovery: best at both depths (168 / 219).
-- Artifacts: five of six below 1,000; the strongest suppression of the
+- Artifacts: five of six pushed outside the top 1,000; the strongest suppression of the
   two-source artifacts (`rtype` 5,844, `getelementbyid` 2,491,
   `ioexception` 1,005).
 - Top-100 character: most (a)+(c) rows (55) and fewest unclassified (3).

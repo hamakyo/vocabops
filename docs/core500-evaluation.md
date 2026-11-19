@@ -1539,7 +1539,7 @@ normalization and an attested set built from the combined corpus.
 - Verdict: **M3 Borda is recommended.** Target median rank 606.5 against
   pooled's 2,930.5; three targets in the top 500 against none; GH-vocabulary
   recovery 168 / 219 against 63 / 98; 55 of the top 100 carry bucket (a) or (c)
-  against 15; five of six artifacts fall below 1,000. Its costs: `param` stays
+  against 15; five of six artifacts land outside the top 1,000. Its costs: `param` stays
   at 31, 41 of its top 100 are bucket (b) technical nouns, and the absent-term
   penalty is asymmetric by source list length (6,139 / 5,167 / 2,527) and should
   be equalized before any view is built on it.
