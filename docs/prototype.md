@@ -907,8 +907,8 @@ does not make them English.
 
 Target-adjacent rows: `retry` 104 → 112, `credential` 302 → 308, `endpoint` 407 → 394,
 `encode` 757 → 731. Most terms move up because 45 rows left the ranking; `fallback`,
-`retry` and `credential` slip because newly merged headwords (`ceil`, `maintainer`,
-`truncate`, …) enter above them.
+`retry` and `credential` slip because newly merged headwords such as `hardcode` (#29) and
+`paginate` (#68) enter above them.
 
 **The three known stem defects are unchanged.** `alway` #252 → 258 (tf 798, df 668),
 `spe` #667 → 648 (tf 258, df 127), `unbound` #943 → 916 (tf 160, df 114). Their tf and df
