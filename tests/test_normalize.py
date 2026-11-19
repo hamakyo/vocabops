@@ -42,6 +42,68 @@ def test_tokenize_drops_numbers_and_underscores():
     assert tokenize("v2 42 snake_case name") == ["v2", "name"]
 
 
+def test_tokenize_keeps_vocabulary_and_drops_timestamp_css_shards():
+    # The Core 500 v0 audit's reproduction case: a full ISO timestamp, a CSS
+    # width and three real digit-bearing terms in one sentence.
+    tokens = tokenize(
+        "Deployed 2026-11-18T02:07:00Z at width:390px with sha256 and arm64 and 1080p"
+    )
+    assert not {"18t02", "07", "00z", "390px"} & set(tokens)
+    assert {"deployed", "sha256", "arm64", "1080p"} <= set(tokens)
+
+
+def test_tokenize_strips_full_iso_timestamps_before_splitting():
+    # Space separator, fractional seconds and numeric offsets are the other
+    # ISO forms the day corpus contains.
+    for stamp in (
+        "2026-11-18T02:07:00Z",
+        "2026-11-17 19:29:02.284",
+        "2026-11-18T10:28:29+09:00",
+        "2026-11-18 11:04",
+    ):
+        assert tokenize(f"start {stamp} end") == ["start", "end"]
+
+
+def test_tokenize_strips_standalone_iso_dates_but_keeps_years():
+    assert tokenize("released 2026-11-18 build") == ["released", "build"]
+    # A bare year and a decimal version are not ISO dates. They are still not
+    # tokens: the pre-existing rule drops pure-number tokens, and rule 1 does
+    # not change that. "2.0" contributes no letter-bearing token either.
+    assert tokenize("in 2026 we shipped version 2.0") == [
+        "in",
+        "we",
+        "shipped",
+        "version",
+    ]
+
+
+def test_tokenize_drops_css_measurement_tokens():
+    assert tokenize("width 390px height 12pt size 1rem indent 2em") == [
+        "width",
+        "height",
+        "size",
+        "indent",
+    ]
+
+
+def test_tokenize_drops_digit_first_shards_only():
+    # Digit-first with a digit after the letter part: tokenizer artifacts.
+    assert tokenize("18t02 7a7e3f9f 834cf5") == []
+    # Letter-first digit terms are real vocabulary and always survive.
+    assert tokenize("sha256 arm64 aarch64 e2e i18n utf8 x402 python3") == [
+        "sha256",
+        "arm64",
+        "aarch64",
+        "e2e",
+        "i18n",
+        "utf8",
+        "x402",
+        "python3",
+    ]
+    # Digit-first with no digit after the letter part is a known residual.
+    assert tokenize("1080p 500s") == ["1080p", "500s"]
+
+
 def test_lemmatize_irregular_verbs():
     assert lemmatize("went") == "go"
     assert lemmatize("was") == "be"

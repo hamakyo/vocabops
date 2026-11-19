@@ -43,6 +43,46 @@ _HTML_TAG_RE = re.compile(r"<[^>\n]+>")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
+# --- digit-bearing token rules -------------------------------------------
+#
+# The Core 500 v0 audit found 82 fragments in the top 500
+# (``data/core500-v0-audit.jsonl`` bucket ``d``; see
+# ``docs/core500-evaluation.md``). The single biggest cause was the bare
+# ``\w+`` tokenizer: an ISO timestamp such as ``2026-11-18T02:07:00Z`` became
+# ``18t02`` / ``07`` / ``00z`` and those shards entered the ranking as if they
+# were vocabulary (25 rows in the top 500). CSS measurements (``390px``,
+# ``320px``, ``1280px``), version shards (``v006``) and hex-like strings
+# (``7a7e3f9f``) add the rest. The three rules below remove that class while
+# keeping real letter-first technical terms (``sha256``, ``arm64``, ``aarch64``,
+# ``e2e``, ``i18n``, ``utf8``, ``x402``, ``python3``, ``1080p``).
+#
+# They live in ``tokenize`` rather than in ``clean_text`` on purpose: both the
+# pipeline (via ``normalize``) and the ingest English-ratio filter call
+# ``tokenize`` directly, so the two paths see identical tokens.
+
+# Rule 1: strip ISO-8601 timestamps before tokenizing. The full datetime form
+# must run before the bare-date form, otherwise the date half is removed and
+# the time half (``t02``, ``07``, ``00z``) is left behind. A bare year such as
+# "in 2026" or "version 2.0" is not an ISO date and is unaffected.
+_ISO_DATETIME_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+    r"(?::\d{2}(?:\.\d+)?)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?\b",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+# Rule 2: CSS/measurement values are not vocabulary (``390px``, ``12pt``).
+_MEASUREMENT_RE = re.compile(r"^\d+(?:px|pt|rem|em)$")
+
+# Rule 3: digit-first shards. A token that starts with a digit and has another
+# digit after at least one letter is a tokenizer artifact of a timestamp,
+# identifier or hex string (``18t02``, ``7a7e3f9f``). Letter-first tokens are
+# never dropped here, so ``sha256``, ``arm64`` and ``e2e`` survive. Digit-first
+# tokens with no digit after the letter part (``1080p``, ``500s``, and also
+# letter-first version shards such as ``v006``) are a documented residual.
+_DIGIT_FIRST_SHARD_RE = re.compile(r"^\d.*[A-Za-z].*\d")
+
 # Words whose lemma cannot be derived with suffix rules.
 IRREGULAR_LEMMAS: dict[str, str] = {
     "am": "be",
@@ -150,8 +190,17 @@ def tokenize(text: str) -> list[str]:
     """Return lowercase word-character tokens.
 
     Punctuation, underscores and pure-number tokens are dropped; a token must
-    contain at least one letter.
+    contain at least one letter. Digit-bearing artifacts are removed by three
+    rules applied in order (see the module-level comment): ISO-8601 timestamps
+    are stripped from the text before tokenizing, CSS/measurement tokens are
+    dropped, and digit-first shards with a digit after their letter part are
+    dropped. Real letter-first technical terms keep their digit suffixes.
     """
+    # Rule 1: remove ISO datetimes, then bare ISO dates, before ``\w+`` can
+    # split them into timestamp shards.
+    text = _ISO_DATETIME_RE.sub(" ", text)
+    text = _ISO_DATE_RE.sub(" ", text)
+
     tokens = []
     for raw in _TOKEN_RE.findall(text):
         token = raw.strip("_").lower()
@@ -160,6 +209,13 @@ def tokenize(text: str) -> list[str]:
         if not any(ch.isalpha() for ch in token):
             continue
         if len(token) == 1 and token not in {"a", "i"}:
+            continue
+        # Rule 2: CSS/measurement values such as "390px" are not vocabulary.
+        if _MEASUREMENT_RE.match(token):
+            continue
+        # Rule 3: digit-first shards such as "18t02" or "7a7e3f9f". Letter-first
+        # tokens (sha256, arm64, e2e) never match this pattern.
+        if _DIGIT_FIRST_SHARD_RE.match(token):
             continue
         tokens.append(token)
     return tokens
