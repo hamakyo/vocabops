@@ -1,0 +1,17 @@
+Title: Session lookup fails after the local cache is cleared
+
+Steps to reproduce: sign in, open the settings page, then clear the local
+cache. The client cannot retrieve the session again and shows an empty page. I
+can reproduce this on two machines, so it is not a local problem.
+
+What I expected: the server should retrieve the session from the database and
+persist it in the cache for the next request. Instead the handler fails before
+it can persist anything.
+
+The logs point at the underlying store, but the error message is not clear.
+Full trace: https://example.invalid/issues/4821
+
+```
+session = store.retrieve(token)
+store.persist(session)
+```

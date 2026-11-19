@@ -1,0 +1,12 @@
+Reviewer: This change looks fine, but we invoke the validator twice in the
+same request. Can we invoke it once and pass the result down?
+
+Author: Good catch. I moved the call so we only invoke it once. I also made
+the error propagate to the caller instead of logging it and returning null.
+
+Reviewer: Thanks. One more thing: if the token expires, invalidate the cached
+entry before the retry, otherwise the fallback path will read stale data. The
+fallback should only run when the primary call fails.
+
+Author: Done. I added a test that tries to reproduce the expiry case, and the
+fallback now runs only after we invalidate the entry.

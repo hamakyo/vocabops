@@ -12,8 +12,8 @@ Goal: make the project understandable and reproducible.
 - [x] add a sample dataset
 - [x] choose the initial corpus source strategy
 - [x] document the public/raw-data boundary
-- [ ] define reproducible data-pipeline conventions
-- [ ] define release/versioning policy
+- [x] define reproducible data-pipeline conventions
+- [x] define release/versioning policy
 
 Initial corpus stack:
 
@@ -35,27 +35,27 @@ Goal: generate a reproducible software-engineering vocabulary ranking without bu
 - [ ] ingest a small Stack Overflow / SOTorrent sample
 - [ ] ingest a bounded GH Archive sample
 - [ ] ingest CodeSearchNet docstrings
-- [ ] integrate wordfreq baseline frequencies
+- [x] integrate wordfreq baseline frequencies
 
 ### Normalization
 
-- [ ] remove or segment code blocks
-- [ ] strip markup, URLs, and boilerplate
-- [ ] preserve document boundaries
-- [ ] assign stable/reproducible document IDs
-- [ ] tokenize
-- [ ] lemmatize
+- [x] remove or segment code blocks
+- [x] strip markup and URLs (source-specific boilerplate removal deferred)
+- [x] preserve document boundaries
+- [x] assign stable/reproducible document IDs
+- [x] tokenize
+- [x] lemmatize (heuristic, not POS-aware)
 - [ ] part-of-speech tag
 - [ ] preserve source-family metadata
 
 ### Statistics
 
-- [ ] compute term frequency
-- [ ] compute document frequency
+- [x] compute term frequency
+- [x] compute document frequency
 - [ ] compute source-family frequency
 - [ ] compute repository frequency where available
-- [ ] implement a first `se_specificity` score
-- [ ] emit corpus snapshot manifests
+- [x] implement a first `se_specificity` score
+- [x] emit corpus snapshot manifests
 
 Exit condition:
 
