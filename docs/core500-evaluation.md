@@ -1,4 +1,10 @@
-# Core 500 candidate — evaluation (v0)
+# Core 500 candidate — evaluation
+
+Two candidates are recorded here. **v0** (part 1) is the first measurement and is
+kept intact as history. **v0.1** (part 2) applies the tokenizer fixes and rebuilds
+the corpus at the current English floor. Neither is a published dataset.
+
+# Part 1 — v0
 
 **Status: candidate artifact, not a published dataset.** `data/core500-v0.jsonl` is a
 measurement from one day of GH Archive prose. It has no glosses, no CEFR levels, no
@@ -267,3 +273,257 @@ its ranking can be explained from reproducible measurements.*
 So the candidate is a useful diagnostic artifact and a step toward Core 500, not Core
 500. It should stay in `data/` as `v0` until tokenization, boilerplate down-ranking
 and the vocabulary/name split are fixed.
+
+# Part 2 — v0.1
+
+**Status: candidate artifact, not a published dataset.** `data/core500-v0.1.jsonl`
+applies the tokenizer fixes from `662c9fc` and rebuilds the corpus with the shared
+`3e-07` English floor. It is a second measurement of the same one-day GH Archive
+slice, not a new corpus and not Core 500. Everything in Part 1 still describes v0 and
+is kept unchanged.
+
+## What was measured
+
+| item | value |
+| --- | --- |
+| corpus | 24 hourly GH Archive files, 2026-11-18 00:00–23:59 UTC |
+| documents | 17,674 |
+| normalized tokens | 2,225,982 |
+| ingest filters | `--exclude-bots --min-english-ratio 0.6 --dedup-text --max-docs 100000` |
+| lemma validation floor | `3e-07` (`ENGLISH_WORD_MIN_FREQUENCY`) |
+| ranking cut | `--min-df 10` → 6,474 rows |
+| candidate | first 500 rows, ranks 1–500 (cut score 6.197) |
+| snapshot id | `gharchive-2026-11-18-day-v2` |
+| corpus file | `out/gharchive/documents-day-v2.jsonl`, sha256 `998195329e64b08b7a7d2b3c0d4c55982159ad90af76fcda2fac5e9a9df6d6e6` |
+| candidate file | `data/core500-v0.1.jsonl`, sha256 `b6190f38dc44efded3128a83911e425ef9beaf614bd0b1dbd20a9f6afe454fdc` |
+| audit file | `data/core500-v0.1-audit.jsonl`, sha256 `0d62a652214258fe4b8a0c4411dd531f9e6989f22f41df5938b98c5da08e8871` |
+
+Two things changed against v0: the tokenizer (three rules, below) and the corpus, which
+is no longer the `1e-06` corpus re-ranked — it was re-ingested at the current `3e-07`
+floor. Unlike v0, this candidate therefore carries both tokenizer and floor effects.
+
+### Ingest counters, v0 → v0.1
+
+| counter | v0 | v0.1 | delta |
+| --- | --- | --- | --- |
+| input files | 24 | 24 | 0 |
+| events seen | 121,837 | 121,837 | 0 |
+| documents written | 17,390 | 17,674 | +284 |
+| skipped: no body | 84,710 | 84,710 | 0 |
+| skipped: bot actor | 14,874 | 14,874 | 0 |
+| skipped: below english ratio | 3,954 | 3,660 | −294 |
+| skipped: no alphabetic tokens | 18 | 18 | 0 |
+| skipped: duplicate text | 891 | 901 | +10 |
+
+The totals close: 121,837 − 84,710 − 14,874 − 3,660 − 18 − 901 = 17,674. The language
+drop is exactly the 3,660 the floor analysis predicted. Of the 294 documents the lower
+floor admits, 10 are exact duplicates of an earlier text and are removed by
+`--dedup-text`, leaving 284 new documents and 37,585 more tokens (+1.7%). A second
+ingest produced a byte-identical file; the pipeline and the extraction also reproduce
+byte-identically (verified with `cmp`).
+
+### Tokenizer rules applied
+
+Three rules in `tokenize()` (`src/vocabops/normalize.py`):
+
+1. ISO-8601 datetimes (`2026-11-18T02:07:00Z`, including fractional seconds and
+   offsets) and bare ISO dates are stripped from the text before `\w+` can split them
+   into `18t02` / `07` / `00z` shards.
+2. Tokens matching `^\d+(px|pt|rem|em)$` are dropped (CSS measurements).
+3. Digit-first tokens with a digit after at least one letter are dropped
+   (`^\d.*[A-Za-z].*\d$`: `18t02`, `7a7e3f9f`). Letter-first digit tokens are never
+   dropped, so `sha256` (#2), `arm64` (#4), `e2e` (#19), `i18n` (#36), `aarch64`
+   (#42) and `x64` (#135) survive unchanged.
+
+Effect on the fragment bucket: 31 of v0's 82 fragment rows are gone from the ranking
+entirely — 25 timestamp shards (`18t13`, `35z`, `05z`, …), 5 CSS measurements
+(`44px`, `390px`, `320px`, `375px`, `1280px`) and the hex string `7a7e3f9f`. A further
+5 rows (`404s`, `compilatore`, `proporre`, `python3`, `sottoponi`) are still ranked but
+fell below the 500 cut. No timestamp or CSS-measurement row remains in the top 500.
+
+Residuals, stated plainly: `v0` (#30), `1080p` (#265) and `500s` (#402) are letter-first
+digit tokens that the rules deliberately keep; `v0` is the first shard of version
+strings such as `v0.23.2` and `v0.0.139`, not a vocabulary item, and it is classified
+as a fragment in the audit. One time shard also survives outside the candidate: `00z`
+(#1,990, tf 21, df 13), produced by forms such as `2026-11-18 ~10:00Z`, where a
+separator between date and time stops the datetime pattern from matching. It is the
+only timestamp shard left in the 6,474-row ranking.
+
+## Coverage of the eight target terms
+
+| term | v0 rank | v0.1 rank | tf | df |
+| --- | --- | --- | --- | --- |
+| `fallback` | 188 | **199** | 1,201 | 695 |
+| `reproduce` | 748 | 832 | 1,664 | 1,313 |
+| `persist` | 1,208 | 1,363 | 480 | 327 |
+| `invalidate` | 1,362 | 1,522 | 106 | 80 |
+| `invoke` | 1,560 | 1,731 | 175 | 149 |
+| `propagate` | 1,868 | 2,056 | 67 | 55 |
+| `retrieve` | 3,408 | 3,652 | 58 | 48 |
+| `underlying` | 4,312 | 4,560 | 76 | 71 |
+
+Every target still sits slightly lower than in v0 even though each gains a little raw
+frequency: the extra 284 documents grow the `min_df 10` vocabulary from 6,215 to 6,474
+rows, and the added rows are mostly non-English, which raises the competition without
+adding English vocabulary. `fallback` remains the only target inside the 500 (at 199,
+down from 188). The target-adjacent rows moved the same way: `retry` 105 → 110,
+`credential` 315 → 341, `endpoint` 435 → 467; `encode` 789 → 885.
+
+## Composition audit
+
+### Counts
+
+| bucket | v0 | v0.1 | delta |
+| --- | --- | --- | --- |
+| (a) transferable SE vocabulary | 94 (18.8%) | 85 (17.0%) | −9 |
+| (b) technical nouns / product / tool / project names | 228 (45.6%) | 217 (43.4%) | −11 |
+| (c) abbreviations and acronyms | 86 (17.2%) | 80 (16.0%) | −6 |
+| (d) fragments and artifacts | 82 (16.4%) | 110 (22.0%) | +28 |
+| (e) other / unclear | 10 (2.0%) | 8 (1.6%) | −2 |
+
+433 terms are shared with v0, 67 are replaced, and **not one shared term changed
+bucket** — every bucket delta is explained by rows entering and leaving the top 500.
+The 67 replacements: 64 non-English rows entered (d), plus `fastify` and `unittest`
+(b), `dtos` (c). Leaving: 9 (a) — `callee`, `checkable`, `deterministically`,
+`launchable`, `merge`, `reimplement`, `restorable`, `runnable`, `timestamp` — 13 (b),
+7 (c) and 36 (d), 31 of which the tokenizer removed outright.
+
+### (a) and (b) notes
+
+`merge` falling out of the top 500 (472 → 515) is a rank slide, not a frequency loss:
+it has tf 6,149 and df 3,144, but is far too common in general English to score high.
+The (a) and (b) text is otherwise unchanged; the same `worktree` / `webhook` /
+`docstring` / `runbook` core leads the list, with `fastify` (#250) and `unittest`
+(#453) the only new technical nouns. `openbot` (#37, from #46) and `deepseek` (#29,
+from #36) rise on the reshuffle.
+
+### (d) fragments and artifacts — full list (110 terms)
+
+The count went **up**, not down. This is the honest headline of v0.1: the tokenizer
+fix removed every timestamp and CSS shard, but the floor-driven re-ingest added 64
+non-English rows, so the fragment share rose from 16.4% to 22.0%.
+
+Non-English strings, 78 rows (2.8% of v0's 500 → 15.6% of v0.1's). Fourteen were
+already in v0 — `aucun`, `aucune`, `fichiers`, `critères`, `criterios`, `fichier`,
+`aceptación`, `relecture`, `अञ`, `गन`, `सङ`, `गह`, `हळ`, `中文说明` — and the other 64
+are new: `écran` (69), `échec` (92), `usuario` (115), `décision` (128), `contenu`
+(157), `servidor` (158), `revisión` (172), `preuve` (191), `défaut` (201), `règle`
+(205), `contient` (209), `serveur` (223), `vérifié` (227), `configuración` (234),
+`périmètre` (236), `attendu` (246), `résultat` (253), `utilisateur` (273), `échoue`
+(274), `réel` (276), `contexte` (280), `constat` (284), `ajouter` (292), `publicar`
+(296), `código` (302), `alcance` (310), `dependencias` (312), `restent` (314),
+`vérifier` (319), `botón` (332), `comportement` (333), `pruebas` (337), `correctif`
+(345), `dépend` (346), `sesión` (353), `réponse` (361), `contexto` (365), `écrit`
+(367), `passent` (376), `erreur` (400), `critérios` (403), `modifié` (405), `bloque`
+(415), `lignes` (416), `affiche` (428), `branche` (436), `abrir` (438), `apparaît`
+(439), `confirmar` (442), `critère` (443), `evidencia` (444), `fusionnée` (445),
+`lisible` (447), `nuvem` (449), `priorité` (450), `depende` (468), `pantalla` (470),
+`producción` (474), `archivos` (477), `cambios` (478), `seulement` (484), `contrôle`
+(488), `prueba` (499), `seule` (500).
+
+Identifier, codename and version shards, 31 rows: `v0` (30), `if1` (44), `qwen3` (50),
+`herdr` (54), `x402` (55), `nemoclaw` (57), `brihas` (66), `if0` (68), `sarathy` (93),
+`stardelt` (100), `krikri` (114), `xhigh` (120), `if2` (149), `fc5q` (152), `39xc`
+(154), `vjpf` (159), `crtl` (180), `77bits` (192), `ac5` (232), `1080p` (265), `if3`
+(299), `romn` (316), `go1` (321), `ac7` (344), `v006` (355), `ac6` (368), `ac2` (385),
+`ac4` (390), `500s` (402), `ventura8` (413), `arfan11` (441). These are the residual
+class the digit rules do not touch: letter-first tokens and codenames with no digit
+after the letter part.
+
+Stem fragment from the lowered floor, 1 row: `alway` (279), the damaged lemma of
+`always` (798 occurrences). The other two known defects are unchanged: `spe` (#781,
+tf 258, df 127) and `unbound` (#1,097, tf 160, df 114) sit outside the candidate.
+
+### Why the non-English rows entered
+
+The old and new corpora differ by 284 documents out of 17,674, but those documents are
+disproportionately French and Spanish. They are spread across many repositories (the
+largest contribute 4 documents each), and they contain 90 raw `aucun` occurrences across
+35 documents; the row moves from tf 35 / df 19 to tf 121 / df 54. This is
+a floor effect, not a tokenizer effect: the English-ratio test counts a token as
+English when wordfreq lists it at `>= 3e-07`, and wordfreq lists many French and
+Spanish words at that level. At `1e-06` those documents scored below 0.6; at `3e-07`
+they clear it. No tokenizer rule touched the ratio path (it filters to `isalpha()`
+tokens before measuring).
+
+## Top-40 changes
+
+39 of v0's top 40 stay inside the top 40. `if1` drops from 40 to 44 and `aucun` enters
+at 40. Positions otherwise move by one or two places because the vocabulary grew; the
+visible movers are `yml` (9 → 6), `e2e` (21 → 19), `supabase` (31 → 28), `deepseek`
+(36 → 29), `openbot` (46 → 37) and `i18n` (37 → 36); `v0` slips 28 → 30.
+
+| # | term | tf | df | v0 # |
+| --- | --- | --- | --- | --- |
+| 1 | `worktree` | 595 | 292 | 1 |
+| 2 | `sha256` | 246 | 140 | 2 |
+| 3 | `webhook` | 245 | 111 | 3 |
+| 4 | `arm64` | 223 | 156 | 4 |
+| 5 | `allowlist` | 202 | 132 | 5 |
+| 6 | `yml` | 199 | 126 | 9 |
+| 7 | `docstring` | 198 | 139 | 6 |
+| 8 | `typecheck` | 196 | 165 | 7 |
+| 9 | `vitest` | 192 | 155 | 8 |
+| 10 | `opencode` | 183 | 91 | 10 |
+| 11 | `pytest` | 163 | 107 | 11 |
+| 12 | `openapi` | 146 | 98 | 12 |
+| 13 | `lockfile` | 145 | 88 | 13 |
+| 14 | `soroban` | 140 | 97 | 14 |
+| 15 | `coderabbit` | 139 | 83 | 15 |
+| 16 | `sbom` | 137 | 21 | 16 |
+| 17 | `subagent` | 159 | 65 | 17 |
+| 18 | `vercel` | 133 | 73 | 18 |
+| 19 | `e2e` | 754 | 429 | 21 |
+| 20 | `chatgpt` | 124 | 63 | 19 |
+| 21 | `dependabot` | 122 | 71 | 20 |
+| 22 | `runbook` | 102 | 69 | 22 |
+| 23 | `unmerged` | 97 | 86 | 23 |
+| 24 | `toml` | 95 | 66 | 24 |
+| 25 | `readback` | 101 | 79 | 25 |
+| 26 | `idempotency` | 88 | 69 | 26 |
+| 27 | `eslint` | 110 | 66 | 27 |
+| 28 | `supabase` | 87 | 47 | 31 |
+| 29 | `deepseek` | 86 | 51 | 36 |
+| 30 | `v0` | 929 | 351 | 28 |
+| 31 | `codeql` | 85 | 57 | 29 |
+| 32 | `worktrees` | 85 | 59 | 30 |
+| 33 | `lgtm` | 84 | 80 | 32 |
+| 34 | `mergeable` | 83 | 71 | 33 |
+| 35 | `pnpm` | 81 | 47 | 34 |
+| 36 | `i18n` | 77 | 59 | 37 |
+| 37 | `openbot` | 76 | 25 | 46 |
+| 38 | `picomatch` | 75 | 35 | 35 |
+| 39 | `webhooks` | 74 | 45 | 38 |
+| 40 | `aucun` | 121 | 54 | 239 |
+
+## Verdict against the Phase 2 exit condition
+
+The Phase 2 exit condition is unchanged, and v0.1 does not meet it.
+
+**Met, better than v0:**
+
+- the ranking and the candidate are reproducible byte-identically from a fixed corpus;
+- the tokenizer defect named in v0 is fixed for its stated classes: zero timestamp
+  shards and zero CSS measurements in the top 500, and 31 fragment rows removed from
+  the ranking entirely, while real digit-bearing terms (`sha256`, `arm64`, `e2e`,
+  `i18n`, `aarch64`) keep their rows;
+- the ingest counters now agree with the floor prediction (3,660 language drops),
+  so the corpus and the floor documentation are consistent for the first time.
+
+**Not met:**
+
+- the candidate is still not a vocabulary dataset: 43.4% (b), 16.0% (c) and 22.0% (d);
+- fragments did not shrink: 16.4% → 22.0%. The composition of the bucket changed
+  completely — non-English strings replaced timestamp shards — but a release still
+  cannot ship 110 rows of it;
+- coverage of the eight target terms is still 1 of 8, and every target rank is slightly
+  worse than in v0;
+- the corpus is still one day of GitHub issue/PR prose, and the audit is still a single
+  LLM annotation.
+
+Conclusion: the tokenizer work is done; the language filter is now the dominant defect.
+The `3e-07` floor is right for the lemmatizer but too permissive as a document-level
+language test, because wordfreq's English list contains French and Spanish words at
+that level. The next round should decide the language filter by script/stopword
+evidence rather than by per-token frequency, and add a guard against stem fragments
+(`alway`). Keep both v0 and v0.1 in `data/` as measurements.
