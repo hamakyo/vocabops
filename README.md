@@ -132,15 +132,25 @@ The first useful version targets:
 
 ```text
 vocabops/
-├── corpus/
-│   └── manifests/
 ├── data/
+│   ├── fixtures/
+│   │   └── sample_corpus/    five original fixture documents
 │   └── sample.json
 ├── docs/
 │   ├── architecture.md
 │   ├── corpus-sources.md
 │   ├── data-schema.md
+│   ├── pipeline-conventions.md
+│   ├── prototype.md
+│   ├── release-policy.md
 │   └── roadmap.md
+├── src/
+│   └── vocabops/
+│       ├── normalize.py
+│       ├── pipeline.py
+│       └── stats.py
+├── tests/
+├── pyproject.toml
 └── README.md
 ```
 
@@ -149,11 +159,16 @@ vocabops/
 - [Architecture](docs/architecture.md)
 - [Corpus sources](docs/corpus-sources.md)
 - [Data schema](docs/data-schema.md)
+- [Pipeline conventions](docs/pipeline-conventions.md)
+- [Release policy](docs/release-policy.md)
+- [Phase 1 prototype](docs/prototype.md)
 - [Roadmap](docs/roadmap.md)
 
 ## Status
 
 Early-stage. The current priority is to build an end-to-end corpus prototype from existing datasets and validate the vocabulary ranking before building custom crawlers or the learning UI.
+
+A minimal Phase 1 prototype now runs end to end on a small self-written fixture corpus and produces a reproducible `se_specificity` ranking. See [Phase 1 prototype](docs/prototype.md).
 
 ## License
 
