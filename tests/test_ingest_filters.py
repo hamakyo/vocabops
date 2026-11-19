@@ -127,7 +127,7 @@ def test_english_ratio_separates_english_from_cjk():
     chinese = english_ratio(CHINESE)
 
     assert english is not None and english >= 0.8
-    # "invalidation" is 1.7e-07 in wordfreq, below the shared 1e-06 English
+    # "invalidation" is 1.7e-07 in wordfreq, below the shared 3e-07 English
     # floor, so this sentence scores 5/6 rather than 1.0. It still passes the
     # 0.6 document filter comfortably; CJK text stays below 0.1.
     assert japanese is not None and japanese < 0.1
@@ -136,7 +136,9 @@ def test_english_ratio_separates_english_from_cjk():
 
 
 def test_english_floor_is_shared_with_the_lemmatizer():
-    assert normalize_module.ENGLISH_WORD_MIN_FREQUENCY == 1e-06
+    # Both modules must use the same object. The exact value moved from 1e-06
+    # to 3e-07 after the day-corpus floor measurement (docs/prototype.md).
+    assert normalize_module.ENGLISH_WORD_MIN_FREQUENCY == 3e-07
     assert ingest_module.ENGLISH_WORD_MIN_FREQUENCY is (
         normalize_module.ENGLISH_WORD_MIN_FREQUENCY
     )

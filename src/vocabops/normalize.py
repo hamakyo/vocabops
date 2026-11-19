@@ -118,11 +118,19 @@ _VOWELS = frozenset("aeiou")
 # Both the lemmatizer below and the English-ratio filter in ``ingest.py`` use
 # this one constant, so the two thresholds cannot drift apart.
 #
-# The value sits well above wordfreq's noise floor for non-words (e.g. "merg"
-# 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08, "código" 1.7e-08) and at or below
-# every technical lemma this corpus needs (e.g. "propagate" and "invalidate" at
-# 1e-06, "invoke" 2.1e-06).
-ENGLISH_WORD_MIN_FREQUENCY = 1e-06
+# The value sits an order of magnitude above wordfreq's noise floor for
+# non-words (e.g. "merg" 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08, "código"
+# 1.7e-08) and at or below the technical lemmas this corpus needs, including
+# ones the old 1e-06 floor wrongly excluded ("fallback" 4.57e-07, "retry"
+# 3.72e-07, "credential" 5.62e-07, "endpoint" 8.51e-07, "encode" 8.91e-07).
+# Measured against the 24-hour GH Archive day corpus, the old floor turned 925
+# of 66,045 distinct raw tokens (1.4% of types, 0.3% of occurrences) into the
+# wrong lemma. Lowering it fixed 22 of the 25 highest-frequency cases but also
+# admits a few stem fragments that wordfreq happens to list just above 3e-07:
+# "always" -> "alway" (3.89e-07), "speed" -> "spe" (5.75e-07) and "unbounded"
+# -> "unbound" (7.08e-07). Those three are accepted, documented defects; the
+# suffix rules have no guard against them (see docs/prototype.md).
+ENGLISH_WORD_MIN_FREQUENCY = 3e-07
 
 
 def clean_text(text: str) -> str:

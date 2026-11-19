@@ -115,6 +115,25 @@ def test_lemmatize_leaves_unchanged_alone_instead_of_inventing_a_stem():
     assert lemmatize("unchanged") == "unchanged"
 
 
+def test_lemmatize_merges_inflections_below_the_old_floor():
+    # The shared floor is 3e-07. These lemmas were below the old 1e-06 floor
+    # ("fallback" 4.57e-07, "retry" 3.72e-07, "credential" 5.62e-07,
+    # "encode" 8.91e-07), so their inflections used to survive as separate rows.
+    assert lemmatize("fallbacks") == "fallback"
+    assert lemmatize("encoded") == "encode"
+    assert lemmatize("credentials") == "credential"
+    assert lemmatize("retries") == "retry"
+
+
+def test_lemmatize_documents_the_known_stem_fragment_defects():
+    # Lowering the floor to 3e-07 has three known bad outcomes: wordfreq lists
+    # the bare stem just above the floor, so the suffix rule accepts it. These
+    # assertions pin current behaviour; they are defects, not goals.
+    assert lemmatize("always") == "alway"  # "alway" 3.89e-07, obsolete word
+    assert lemmatize("speed") == "spe"  # "spe" 5.75e-07, a fragment
+    assert lemmatize("unbounded") == "unbound"  # "unbound" 7.08e-07, other word
+
+
 def test_lemmatize_target_terms_stay_in_base_form():
     for term in [
         "retrieve",
