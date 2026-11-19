@@ -32,9 +32,9 @@ Goal: generate a reproducible software-engineering vocabulary ranking without bu
 
 ### Source adapters
 
-- [ ] ingest a small Stack Overflow / SOTorrent sample
+- [x] ingest a small Stack Overflow / SOTorrent sample — 17,390 posts, two-stage sample documented in [corpus-sources.md](corpus-sources.md#sampling-design-two-stages-not-one)
 - [x] ingest a bounded GH Archive sample
-- [ ] ingest CodeSearchNet docstrings
+- [x] ingest CodeSearchNet docstrings — 17,390 docstrings from 1,880,853 train records, documented in [corpus-sources.md](corpus-sources.md#codesearchnet--documentationdocstring-english)
 - [x] integrate wordfreq baseline frequencies
 
 ### Normalization

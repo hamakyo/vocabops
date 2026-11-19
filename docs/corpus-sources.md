@@ -10,13 +10,17 @@ The goal is to validate the central hypothesis first:
 
 ### Stack Overflow — human problem-solving language
 
-Primary source:
+Acquisition route (measured 2026-11-20):
 
-- Stack Exchange / Stack Overflow public data dump
-
-Prototype option:
-
-- SOTorrent-derived text blocks for faster experimentation
+- Hugging Face dataset `flax-sentence-embeddings/stackexchange_title_body_jsonl`
+  (a Stack Exchange redistribution), file `stackoverflow.com-Posts.jsonl.gz`,
+  downloaded with `huggingface_hub`;
+- working stream `out/stackoverflow/raw/stackoverflow-full.jsonl.gz`:
+  7,826,492,339 bytes, 18,562,443 lines, sha256
+  `031b28eee4e4d7c6dd819df3dd40d3681cdcd85e85462711725654b134733c5d`;
+- one JSON object per post, `texts[0]` the title and `texts[1:]` the body;
+  `tags` are retained, HTML/markup is stripped, and the document is
+  `title + "\n" + body`.
 
 Role:
 
@@ -31,9 +35,41 @@ Processing policy:
 
 - remove or isolate code blocks
 - strip HTML and boilerplate
-- preserve document boundaries
+- preserve document boundaries (one document per post)
 - retain tags as metadata
 - compute term frequency and document frequency
+
+### Sampling design: two stages, not one
+
+A single pass of the committed adapter over all 18.56M records measured at
+about **3 hours**, which repeatedly exceeded the run window. The sample was
+therefore built in two stages:
+
+1. **Stage 1 — uniform line sample.** A one-pass reservoir sample of
+   **30,000 raw JSONL lines** from the full file, seed `20261119`
+   (`~/so_stage1.py`). This reads the gzip stream once and stores only 30,000
+   lines.
+2. **Stage 2 — the committed adapter.** `python -m vocabops.ingest
+   stackoverflow --input out/stackoverflow/raw-sample-30000.jsonl ...`, seed
+   `20261118`, gates unchanged. Of the 30,000 lines, **29,852 passed all
+   gates** (14 under the 100-character minimum, 134 below the 0.6 English
+   ratio, 0 exact duplicates); the adapter then reservoir-sampled
+   **17,390 documents** into
+   `out/stackoverflow/documents-so-sample.jsonl`.
+
+**Why this is the sample of record.** Stage 1 is a uniform sample of the full
+line stream, and stage 2 is a uniform sample of the gate-passing records
+inside it. The composition of two uniform samples is a uniform sample of the
+gate-passing population: 29,852/30,000 (99.5%) of stage-1 lines pass, so the
+17,390 stage-2 documents are a uniform sample of roughly 18.4M gate-passing
+posts, not a convenience slice. The equivalence is exact for the record-local
+gates (empty, length, language, alphabetic tokens). One caveat: the real
+single-pass pipeline also runs exact-text dedup across the whole stream, while
+stage 2 can only dedup inside its 30,000-line window. A duplicate whose first
+copy fell outside the window would be kept here and dropped in a full run.
+The sample contains **zero** exact duplicates, so there is no within-sample
+evidence of that class; the residual bias is at most one copy per
+cross-boundary duplicate and is not measurable from the sample.
 
 Raw post text is an analysis input, not a VocabOps release artifact.
 
@@ -66,9 +102,24 @@ Limitations:
 
 ### CodeSearchNet — documentation/docstring English
 
-Primary source:
+Acquisition route (measured 2026-11-20):
 
-- CodeSearchNet corpus
+- Hugging Face canonical dataset `code-search-net/code_search_net`, language
+  `train` splits. The official CodeSearchNet S3 links returned **403**, so the
+  HF mirror is the route actually used;
+- six parquet files: go 211 MB, java 390 MB, javascript 159 MB, php 461 MB,
+  python 522 MB, ruby 39 MB;
+- **1,880,853** training records read. Of those, **919,216 (48.9%)** passed
+  all gates; the rest were 865,105 under the 100-character minimum, 44,097
+  below the 0.6 English ratio, 48,693 exact duplicates, 3,183 empty, 559 with
+  no alphabetic tokens;
+- a single-pass Algorithm-R reservoir sample (seed `20261118`) took
+  **17,390** documents, written to
+  `out/codesearchnet/documents-csn-sample.jsonl`;
+- sample composition by language: java 4,992, php 4,424, python 4,221, go
+  2,020, javascript 1,174, ruby 559. A second full run reproduced the sample
+  byte-identically (sha256
+  `f1c5e06de4a0c4fd3d65a6e99943ebcbb5bbdc2c4447ef1778356da94dfcc6fc`).
 
 Role:
 
@@ -85,8 +136,16 @@ Why use it:
 Limitations:
 
 - older than the other planned sources
-- language coverage is limited
+- language coverage is limited (six languages, no C#/C++), and the sample is
+  Ruby-thin at 559 documents
 - should not be treated as the sole representation of current software English
+- **document IDs are not unique in this source.** The identity key is
+  `repo/path#func_name`; the upstream train split contains 56 such keys with
+  two or three different docstrings, i.e. 92 lines beyond the first with a
+  repeated `doc_id`. The pipeline counts every line as a document, so the
+  17,390-document count is unaffected, but a consumer that keys by `doc_id`
+  would collapse those rows. Fixing the key would change the sample and is
+  deferred.
 
 ### wordfreq — general-English baseline
 
@@ -128,6 +187,37 @@ Stack Overflow dump / SOTorrent
 ```
 
 This design intentionally postpones broad custom crawling.
+
+## Combined corpus v1 (52,170 documents)
+
+The first three-source corpus is a plain concatenation, in this order:
+`out/gharchive/documents-day-v3.jsonl` +
+`out/codesearchnet/documents-csn-sample.jsonl` +
+`out/stackoverflow/documents-so-sample.jsonl` →
+`out/combined/documents-combined-v1.jsonl` (52,170 lines, sha256
+`6acbf476b9a7b6b562d693b1d6561dfd2b5331a2ff4fe9af069342132aa193e1`).
+
+Each source contributes exactly 17,390 documents. That equal-document design
+does **not** give equal weight: `se_specificity` uses token frequency, and the
+sources differ in document length.
+
+| source | documents | document share | normalized tokens | token share | text bytes | byte share |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| GH Archive (2026-11-18 day, v3) | 17,390 | 33.3% | 2,181,317 | 52.2% | 30,979,129 | 58.6% |
+| CodeSearchNet sample | 17,390 | 33.3% | 521,906 | 12.5% | 5,586,210 | 10.6% |
+| Stack Overflow sample | 17,390 | 33.3% | 1,476,830 | 35.3% | 16,341,419 | 30.9% |
+| **total** | **52,170** | 100% | **4,180,053** | 100% | 52,906,758 | 100% |
+
+Token counts use the project normalizer (lemmatized, stopwords removed) and
+match the combined pipeline manifest. GH Archive is more than half the token
+mass; CodeSearchNet is one docstring-sized eighth. This is the first measured
+answer to "what does adding sources do to the ranking" — see
+[Part 8 of the Core 500 evaluation](core500-evaluation.md#part-8--combined-corpus-and-source-bias).
+
+Known identity caveat: 56 CodeSearchNet identifiers occur 2–3 times, so the
+file has 52,170 lines but 52,078 unique `doc_id` values (92 repeated lines).
+The pipeline treats every line as a document; nothing deduplicates on
+`doc_id`, and the counts above are line counts.
 
 ## Sources postponed until after hypothesis validation
 
