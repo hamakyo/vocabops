@@ -14,6 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Ingestion-only: the CodeSearchNet adapter reads parquet. Never a runtime
+# dependency of the published package.
+ingest = [
+    "pyarrow>=15",
+]
 dev = [
     "pytest>=8",
 ]
