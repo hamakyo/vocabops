@@ -495,7 +495,7 @@ Every target gains 19×–53× raw frequency. At `min_df = 3` the absolute rank 
 
 The lemmatizer validates candidate lemmas at `wordfreq >= 1e-06`, the same constant the ingest English-ratio filter uses. That floor is a general-English judgement and sits above two technical words this corpus needs: `fallback` (4.57e-07) and `encode` (8.91e-07). As a result `fallbacks` never merges into `fallback`, and `encoded` / `encoding` / `encodes` never merge into `encode`.
 
-This section measures what a floor of `3e-07` would do. **No constant and no production code was changed.** The measurement is a throwaway script under `out/` (not committed): it reads `out/gharchive/documents-day.jsonl`, reproduces the lemmatizer's irregular map, suffix candidates and "most frequent accepted candidate wins" rule at both floors, and compares the outcomes token by token. Stopword removal is applied as usual, so the counts below are over raw corpus tokens.
+This section measures what a floor of `3e-07` would do. **No constant and no production code was changed.** The measurement is a throwaway script under `out/` (not committed): it reads `out/gharchive/documents-day.jsonl`, reproduces the lemmatizer's irregular map, suffix candidates and "most frequent accepted candidate wins" rule at both floors, and compares the outcomes token by token. Counts are over raw corpus tokens before stopword removal; none of the 925 changed tokens is a stopword, so no change is hidden by that step.
 
 | measure | value |
 | --- | --- |
