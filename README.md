@@ -162,13 +162,13 @@ vocabops/
 - [Pipeline conventions](docs/pipeline-conventions.md)
 - [Release policy](docs/release-policy.md)
 - [Phase 1 prototype](docs/prototype.md)
+- [Core 500 evaluation](docs/core500-evaluation.md)
+- [Ranking evaluation](docs/ranking-evaluation.md)
 - [Roadmap](docs/roadmap.md)
 
 ## Status
 
-Early-stage. The current priority is to build an end-to-end corpus prototype from existing datasets and validate the vocabulary ranking before building custom crawlers or the learning UI.
-
-A minimal Phase 1 prototype now runs end to end on a small self-written fixture corpus and produces a reproducible `se_specificity` ranking. See [Phase 1 prototype](docs/prototype.md).
+Phase 1 is complete and Phase 2 (the Core 500 dataset) is under way. The pipeline runs end to end on three real corpora — a full day of GH Archive (17,390 documents), Stack Overflow and CodeSearchNet (17,390 sampled documents each) — with a dictionary- and corpus-validated lemmatizer. Because naive concatenation lets docstring conventions and platform APIs swamp the vocabulary, the production ranking fuses per-source rankings (Borda fusion, percentile variant); the method comparison is recorded in [Ranking evaluation](docs/ranking-evaluation.md) and the running measurements in [Core 500 evaluation](docs/core500-evaluation.md). The current vocabulary view (v3) is built on the fused ranking. Next: Japanese glosses, then publishing Core 500 as JSON/CSV with the methodology. 148 tests pass.
 
 ## License
 
