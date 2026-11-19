@@ -44,7 +44,7 @@ Goal: generate a reproducible software-engineering vocabulary ranking without bu
 - [x] preserve document boundaries
 - [x] assign stable/reproducible document IDs
 - [x] tokenize
-- [x] lemmatize (heuristic, not POS-aware)
+- [x] lemmatize (dictionary-validated, not POS-aware)
 - [ ] part-of-speech tag
 - [x] preserve source-family metadata
 
