@@ -5,8 +5,13 @@ The fixtures are written by hand and contain no third-party text.
 
 import json
 
+from wordfreq import word_frequency
+
+from vocabops import ingest as ingest_module
+from vocabops import normalize as normalize_module
 from vocabops.ingest import (
     BOT_LOGINS,
+    ENGLISH_WORD_MIN_FREQUENCY,
     english_ratio,
     ingest,
     is_bot_actor,
@@ -15,6 +20,10 @@ from vocabops.ingest import (
 
 JAPANESE = "キャッシュの無効化パスが壊れています。修正してください。"
 CHINESE = "这一项筛选结果不正确，请修复缓存失效的问题。"
+# Spanish sentence whose only "English" tokens under the old rule were words
+# that wordfreq lists at trace frequencies (código 1.7e-08, validación,
+# necesitamos) or that double as English function words (de, y, las).
+SPANISH = "Necesitamos revisar el código y las pruebas antes de la validación."
 
 
 def _event(event_id, body, actor=None, event_type="IssueCommentEvent"):
@@ -117,10 +126,53 @@ def test_english_ratio_separates_english_from_cjk():
     japanese = english_ratio(JAPANESE)
     chinese = english_ratio(CHINESE)
 
-    assert english is not None and english >= 0.9
+    assert english is not None and english >= 0.8
+    # "invalidation" is 1.7e-07 in wordfreq, below the shared 1e-06 English
+    # floor, so this sentence scores 5/6 rather than 1.0. It still passes the
+    # 0.6 document filter comfortably; CJK text stays below 0.1.
     assert japanese is not None and japanese < 0.1
     assert chinese is not None and chinese < 0.1
     assert english_ratio("1234 5678 !!!") is None
+
+
+def test_english_floor_is_shared_with_the_lemmatizer():
+    assert normalize_module.ENGLISH_WORD_MIN_FREQUENCY == 1e-06
+    assert ingest_module.ENGLISH_WORD_MIN_FREQUENCY is (
+        normalize_module.ENGLISH_WORD_MIN_FREQUENCY
+    )
+
+
+def test_trace_frequency_tokens_no_longer_count_as_english():
+    # código is in wordfreq's English list only at its noise floor.
+    assert 0 < word_frequency("código", "en") < ENGLISH_WORD_MIN_FREQUENCY
+    # The old "> 0" rule scored this sentence at 0.6 and kept it; the shared
+    # floor scores it at 0.4, below the 0.6 cut.
+    spanish_ratio = english_ratio(SPANISH)
+    assert spanish_ratio is not None and spanish_ratio < 0.6
+    # An ordinary English document still clears the 0.6 filter even though
+    # "invalidation" (1.7e-07) is below the floor.
+    english = english_ratio("The cache invalidation path is broken.")
+    assert english is not None and english >= 0.8
+
+
+def test_english_floor_drops_spanish_and_keeps_english(tmp_path):
+    source = _write_events(
+        tmp_path / "events.json",
+        [
+            _event(1, SPANISH, "octocat"),
+            _event(2, "The cache invalidation path is broken.", "octocat"),
+        ],
+    )
+    output = tmp_path / "documents.jsonl"
+
+    counters = ingest(source, output, max_docs=10, min_english_ratio=0.6)
+
+    assert counters["documents_written"] == 1
+    assert counters["skipped_language"] == 1
+    assert counters["skipped_no_tokens"] == 0
+    assert [doc["text"] for doc in _read_jsonl(output)] == [
+        "The cache invalidation path is broken."
+    ]
 
 
 def test_language_filter_drops_non_english_and_counts_reasons(tmp_path):

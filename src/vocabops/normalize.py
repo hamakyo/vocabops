@@ -29,7 +29,7 @@ from wordfreq import word_frequency
 __all__ = [
     "STOPWORDS",
     "IRREGULAR_LEMMAS",
-    "DERIVED_MIN_FREQUENCY",
+    "ENGLISH_WORD_MIN_FREQUENCY",
     "clean_text",
     "tokenize",
     "lemmatize",
@@ -113,12 +113,16 @@ STOPWORDS: frozenset[str] = frozenset(
 
 _VOWELS = frozenset("aeiou")
 
-# A generated candidate counts as a real English word at or above this
-# wordfreq frequency. The threshold sits well above wordfreq's noise floor for
-# non-words (e.g. "merg" 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08) and at or
-# below every technical lemma this corpus needs (e.g. "propagate" and
-# "invalidate" at 1e-06, "invoke" 2.1e-06).
-DERIVED_MIN_FREQUENCY = 1e-06
+# The shared "real English word" floor: a token or generated lemma counts as
+# English only when its wordfreq English frequency is at or above this value.
+# Both the lemmatizer below and the English-ratio filter in ``ingest.py`` use
+# this one constant, so the two thresholds cannot drift apart.
+#
+# The value sits well above wordfreq's noise floor for non-words (e.g. "merg"
+# 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08, "código" 1.7e-08) and at or below
+# every technical lemma this corpus needs (e.g. "propagate" and "invalidate" at
+# 1e-06, "invoke" 2.1e-06).
+ENGLISH_WORD_MIN_FREQUENCY = 1e-06
 
 
 def clean_text(text: str) -> str:
@@ -222,10 +226,11 @@ def lemmatize(token: str) -> str:
 
     Order of operations: irregular map, candidate generation from the suffix
     rules, then validation against ``wordfreq``. A candidate is accepted only
-    when its English frequency is at least :data:`DERIVED_MIN_FREQUENCY`; among
-    accepted candidates the most frequent wins. If no candidate survives, the
-    original token is returned, because a real inflected word is always a safer
-    answer than an invented stem.
+    when its English frequency is at least :data:`ENGLISH_WORD_MIN_FREQUENCY`
+    (the same "real English word" floor the ingest English-ratio filter uses);
+    among accepted candidates the most frequent wins. If no candidate survives,
+    the original token is returned, because a real inflected word is always a
+    safer answer than an invented stem.
 
     The original token is never compared against the candidates: an inflected
     form can be more frequent than its lemma (``required`` 1.05e-04 vs
@@ -244,7 +249,7 @@ def lemmatize(token: str) -> str:
     best_frequency = 0.0
     for candidate in sorted(_derived_candidates(token)):
         frequency = _frequency(candidate)
-        if frequency >= DERIVED_MIN_FREQUENCY and frequency > best_frequency:
+        if frequency >= ENGLISH_WORD_MIN_FREQUENCY and frequency > best_frequency:
             best = candidate
             best_frequency = frequency
     return best if best is not None else token

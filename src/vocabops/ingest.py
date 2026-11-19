@@ -75,7 +75,7 @@ from urllib.request import Request, urlopen
 
 from wordfreq import word_frequency
 
-from vocabops.normalize import tokenize
+from vocabops.normalize import ENGLISH_WORD_MIN_FREQUENCY, tokenize
 
 __all__ = [
     "GHARCHIVE_FAMILY",
@@ -83,6 +83,7 @@ __all__ = [
     "USER_AGENT",
     "BOT_LOGIN_SUFFIX",
     "BOT_LOGINS",
+    "ENGLISH_WORD_MIN_FREQUENCY",
     "document_id",
     "english_ratio",
     "extract_document",
@@ -174,15 +175,22 @@ def is_bot_actor(login: str | None) -> bool:
 
 @lru_cache(maxsize=None)
 def _is_english_word(token: str) -> bool:
-    """Whether ``wordfreq`` knows ``token`` as an English word (cached)."""
-    return word_frequency(token, "en") > 0.0
+    """Whether ``wordfreq`` knows ``token`` as a real English word (cached).
+
+    Uses the shared :data:`vocabops.normalize.ENGLISH_WORD_MIN_FREQUENCY`
+    floor, not mere nonzero presence: wordfreq lists many Spanish and
+    Portuguese words at trace frequencies (``código`` 1.7e-08), and counting
+    those as English let non-English documents pass the ratio filter.
+    """
+    return word_frequency(token, "en") >= ENGLISH_WORD_MIN_FREQUENCY
 
 
 def english_ratio(text: str) -> float | None:
-    """Share of alphabetic tokens that ``wordfreq`` knows as English.
+    """Share of alphabetic tokens that are real English words.
 
-    Returns ``None`` when the text has no alphabetic tokens at all, so the
-    caller can treat such a document as empty.
+    A token counts when its wordfreq English frequency is at least
+    :data:`ENGLISH_WORD_MIN_FREQUENCY`. Returns ``None`` when the text has no
+    alphabetic tokens at all, so the caller can treat such a document as empty.
     """
     tokens = [token for token in tokenize(text) if token.isalpha()]
     if not tokens:
