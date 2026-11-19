@@ -751,6 +751,25 @@ every target term ranks 14–281 places better than in v0.1 (3–33 better than 
 the competing vocabulary is 292 rows smaller. The full comparison is in
 [Core 500 candidate — evaluation, Part 3](core500-evaluation.md#part-3--v02).
 
+## Vocabulary and technical views
+
+The Phase 2 review item "review high-ranking technical nouns separately from transferable
+English vocabulary" is now two artifacts, both generated from
+`data/ranking-v3-classification.jsonl` by `scripts/build_views.py`:
+`data/core500-vocab-v0.jsonl` (buckets a + c, 500 rows: 342 a, 158 c) and
+`data/core500-technical-v0.jsonl` (bucket b, top 300). Filling the vocabulary view
+required classifying ranks 501–1020; a + c reached exactly 500 at rank 1020, so the
+review stopped there (1,020 rows: a 342, b 403, c 158, d 104, e 13).
+
+The split is a review, not a filter. Both deterministic alternatives were measured on
+the 437 scored rows of the v0.2 audit and failed: a wordfreq cut at `1e-7` agrees 56.8%
+(59.3% at the best threshold, because 41 of 103 (a) terms are as absent from general
+English as product names), and a capitalization ratio has medians 0.07 for (a) and 0.12
+for (b) — it catches 23% of (b) at a usable precision, and 84% only by mislabelling 71%
+of the vocabulary side. The full numbers, the two views' composition and the technical
+view's legitimate use as an ecosystem watchlist are in
+[Core 500 candidate — evaluation, Part 4](core500-evaluation.md#part-4--vocabulary-and-technical-views).
+
 ## Known limitations
 
 - **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files; 17,390 documents in v1 and v3, 17,674 in v2) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-dominant slice of the ecosystem — the language filter still leaks a small Latin-script and Devanagari residue, as the v0.2 ranking shows.

@@ -741,3 +741,161 @@ should build on. The remaining defects are not frequency-threshold defects. The 
 work is the one Part 2 named: script/stopword evidence in the language test for
 mixed-language documents, and a bare-stem guard in the lemmatizer. Keep v0, v0.1 and
 v0.2 in `data/` as measurements.
+
+# Part 4 — vocabulary and technical views
+
+**Status: review artifact, not a published dataset.** Part 3 measured that 48.2% of the
+top 500 are technical nouns and names. This part separates that material from
+transferable vocabulary, and records why the separation is a review rather than a filter.
+The two views are `data/core500-vocab-v0.jsonl` and `data/core500-technical-v0.jsonl`;
+both are generated from `data/ranking-v3-classification.jsonl` by
+`scripts/build_views.py` and reproduce byte-identically.
+
+## The two failed deterministic rules
+
+The rules were measured on the 437 scored rows of `data/core500-v0.2-audit.jsonl` that
+the split has to separate: 196 rows in (a)/(c) on the vocabulary side and 241 in (b) on
+the technical side. (d) and (e) belong to neither view and are excluded.
+
+**wordfreq threshold.** Rule: a term is transferable if its general-English frequency is
+at or above `T`. At `T = 1e-7` — the lemma-validation floor already in the pipeline —
+agreement is **56.8%**. Sweeping every cut from zipf 0 to 8 raises the best case only to
+**59.3%** (zipf 1.2), so the failure is not a badly chosen threshold. The cause is
+overlap: **41 of 103 (a) terms have wordfreq 0.0**, exactly like product names.
+`typecheck`, `mergeable`, `worktree` and `idempotency` are as absent from general English
+as `vercel` and `supabase`. A frequency floor cannot tell "unknown because technical"
+from "unknown because a product name", and its errors fall on precisely the terms the
+vocabulary view needs to keep.
+
+**Capitalization ratio.** Rule: the share of raw-corpus occurrences written with an
+initial capital. On the v3 corpus the median is **0.07 for (a), 0.12 for (b)** and 0.23
+for (c): the distributions almost completely overlap, because GitHub prose writes
+product names lowercase (`vercel`, `pnpm`, `vitest`). A cut at 0.5 has acceptable
+precision but catches only **56 of 241 (23%) of (b)**. Lowering the cut until it catches
+203 of 241 (84%) also flags **139 of 196 (71%) of the vocabulary side**, for 59.5%
+overall agreement. No threshold catches half of (b) without giving up most of the
+vocabulary side.
+
+The conclusion is not that the corpus is noisy; it is that (a)/(b) is a semantic
+distinction — *is this word useful outside this ecosystem?* — and not a surface property
+of the string. The split is therefore a classification review over the ranking, and both
+views inherit the review's judgement and its error rate.
+
+## What was classified
+
+To fill a 500-term vocabulary view, ranks 1–500 (the v0.2 audit) were reused verbatim and
+ranks 501–1020 were classified with the same five buckets. The vocabulary side reached
+exactly 500 terms at rank 1020 (`refresh`), so the review stopped there: **1,020 rows**,
+a = 342, b = 403, c = 158, d = 104, e = 13. Ranks 1–500 match
+`data/core500-v0.2-audit.jsonl` exactly; the extra 520 rows are the deep review. The
+depth is a property of this round (the early-stop condition), not of the ranking.
+
+## Vocabulary view
+
+`data/core500-vocab-v0.jsonl` holds buckets (a) and (c) in ranking order, 500 rows:
+**342 (a) (68.4%) and 158 (c) (31.6%)**. Only 196 rows (39.2%) come from the original top
+500; the other 304 (60.8%) come from ranks 501–1020. The deep rows are overwhelmingly
+(a): 239 of the 304, against 65 (c). Acronyms cluster at the head (`sha256`, `arm64`
+open the view), while the tail is ordinary software-engineering vocabulary. That is the
+expected shape: the ranking's top is good at surfacing ecosystem tokens, and vocabulary
+needs depth.
+
+No (d) or (e) row can enter by construction, so the view contains no timestamp shards,
+no non-English strings and no stem artifacts. Its quality issues are inside (a) and (c):
+
+- **(c) names, not abbreviations of vocabulary.** `rocm` (23), `gke` (44), `ghcr` (74),
+  `mcp` (78), `otel` (173), `msvc` (178), `gpt` (187) and `oci` (228) are products or
+  protocols; `py` (76), `js` (442) and `ts` (469) are file-extension shorthands. They are
+  not technical nouns to learn, which is why the review keeps them out of (b), but they
+  are not vocabulary either. Bucket (c) is doing double duty.
+- **(a) jargon of the week.** `agentic` (46), `restack` (87, a Graphite-specific
+  workflow), `guardrails` (302), `affordance` (320), `touchpoints` (336), `playtest`
+  (344), `attestation` (371) and `rubric` (439) are transferable in form but selected by
+  one day of discourse. A single-day corpus cannot say whether they last.
+- **Unmerged inflections inflate (a).** `rebase` (21), `rebased` (33) and `rebases` (55)
+  are three rows for one lemma; `dedupe` (26), `dedup` (28), `deduplicated` (82),
+  `deduplicate` (97) and `deduplication` (156) are five. `enqueue`/`enqueues` and
+  `recompute`/`recomputes` repeat the pattern. The lemmatizer defect documented in Parts
+  1–3 is now visible as duplicate rows inside the vocabulary view, so 500 rows are fewer
+  than 500 distinct words.
+
+## Coverage of the eight target terms
+
+| term | overall rank | vocabulary view rank |
+| --- | --- | --- |
+| `fallback` | 185 | **60** |
+| `reproduce` | 716 | **316** |
+| `persist` | 1,176 | — below the reviewed depth |
+| `invalidate` | 1,329 | — below the reviewed depth |
+| `invoke` | 1,527 | — below the reviewed depth |
+| `propagate` | 1,835 | — below the reviewed depth |
+| `retrieve` | 3,375 | — below the reviewed depth |
+| `underlying` | 4,279 | — below the reviewed depth |
+
+Coverage rises from 1 of 8 in the top 500 to **2 of 8 in the vocabulary view**:
+`reproduce` enters only because the view reaches rank 1020. The other six rank
+1,176–4,279, so their view rank is undefined, not zero. Extending the review to about
+rank 4,300 is required before their view ranks can be stated at all; that is the natural
+next depth if target coverage is the goal.
+
+## Technical view
+
+`data/core500-technical-v0.jsonl` holds bucket (b) in ranking order, capped at 300 rows
+and covering original ranks 1–649. The remaining 103 (b) rows (ranks 650–1020) fall
+outside the cap. Top 30:
+
+| view rank | term | overall rank | score |
+| --- | --- | --- | --- |
+| 1 | `worktree` | 1 | 10.180 |
+| 2 | `webhook` | 3 | 9.285 |
+| 3 | `allowlist` | 5 | 9.114 |
+| 4 | `docstring` | 6 | 9.089 |
+| 5 | `vitest` | 8 | 9.058 |
+| 6 | `opencode` | 10 | 9.004 |
+| 7 | `pytest` | 11 | 8.857 |
+| 8 | `openapi` | 12 | 8.784 |
+| 9 | `lockfile` | 13 | 8.749 |
+| 10 | `soroban` | 14 | 8.749 |
+| 11 | `coderabbit` | 15 | 8.742 |
+| 12 | `subagent` | 17 | 8.719 |
+| 13 | `vercel` | 18 | 8.691 |
+| 14 | `chatgpt` | 19 | 8.613 |
+| 15 | `dependabot` | 20 | 8.613 |
+| 16 | `runbook` | 22 | 8.415 |
+| 17 | `readback` | 25 | 8.302 |
+| 18 | `idempotency` | 26 | 8.289 |
+| 19 | `eslint` | 27 | 8.270 |
+| 20 | `codeql` | 29 | 8.255 |
+| 21 | `worktrees` | 30 | 8.255 |
+| 22 | `supabase` | 31 | 8.243 |
+| 23 | `pnpm` | 34 | 8.207 |
+| 24 | `picomatch` | 35 | 8.131 |
+| 25 | `deepseek` | 36 | 8.118 |
+| 26 | `webhooks` | 38 | 8.098 |
+| 27 | `fastapi` | 41 | 8.049 |
+| 28 | `frontmatter` | 42 | 8.020 |
+| 29 | `prefill` | 43 | 8.020 |
+| 30 | `qwen` | 44 | 8.020 |
+
+**An ecosystem watchlist is a legitimate artifact, and this is one.** The view answers
+"what is the ecosystem talking about in this snapshot", and that is a useful, time-stamped
+question. It is not a learning list: it mixes durable concepts (`worktree`, `allowlist`,
+`docstring`, `lockfile`, `runbook`, `idempotency`, `readback`, `frontmatter`) with tools
+(`vitest`, `pytest`, `eslint`, `pnpm`, `fastapi`, `pydantic`, `vllm`), vendors (`vercel`,
+`supabase`, `cloudflare`, `deepseek`, `qwen`) and projects (`opencode`, `coderabbit`,
+`soroban`, `picomatch`). Two uses are honest: compare snapshots to see which names are
+rising or fading (`soroban`, `coderabbit`, `prefill`, `picomatch` are one-day signals),
+and use recurrence across snapshots as evidence for promoting a technical noun into a
+future curated technical glossary, separate from Core 500. The lemmatizer defect also
+shows here: `worktree`/`worktrees` and `webhook`/`webhooks` occupy separate rows.
+
+## Verdict
+
+The roadmap item "review high-ranking technical nouns separately from transferable
+English vocabulary" is satisfied. The review now has two explicit artifacts with a
+stated split rule, measured failure of the two deterministic alternatives, and a
+documented quality audit of each side. The split does not make Core 500 publishable: the
+raw top 500 still carries 10.6% fragment residue, target coverage is 2 of 8, the
+annotation is a single LLM pass, and the corpus is one day of issue/PR prose. It does
+mean the next corpus round can tune the two sides separately, and it identifies depth
+(about rank 4,300) as the next lever for target coverage.

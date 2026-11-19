@@ -68,7 +68,7 @@ Goal: turn the corpus ranking into the first useful software-engineering vocabul
 - [ ] evaluate candidate ranking methods
 - [x] define minimum frequency/document-frequency thresholds
 - [ ] detect and down-rank boilerplate and obvious low-value terms
-- [ ] review high-ranking technical nouns separately from transferable English vocabulary
+- [x] review high-ranking technical nouns separately from transferable English vocabulary — done via the two views and [Part 4](core500-evaluation.md#part-4--vocabulary-and-technical-views); the split is a review, not a rule.
 - [ ] curate Japanese glosses
 - [ ] attach CEFR where reliable
 - [ ] extract common collocations
