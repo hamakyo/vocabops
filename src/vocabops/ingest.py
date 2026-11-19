@@ -77,10 +77,14 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import html
 import io
 import json
+import random
+import re
+import sqlite3
 import sys
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -92,23 +96,45 @@ from vocabops.normalize import tokenize
 
 __all__ = [
     "GHARCHIVE_FAMILY",
+    "STACKOVERFLOW_FAMILY",
+    "CODESEARCHNET_FAMILY",
     "DEFAULT_MAX_DOCS",
+    "DEFAULT_SAMPLE_SIZE",
+    "DEFAULT_SAMPLE_SEED",
+    "DEFAULT_MIN_CHARS",
+    "DEFAULT_MIN_ENGLISH_RATIO",
     "USER_AGENT",
     "BOT_LOGIN_SUFFIX",
     "BOT_LOGINS",
     "ENGLISH_RATIO_MIN_FREQUENCY",
+    "clean_stackoverflow_text",
+    "clean_docstring_text",
     "document_id",
     "english_ratio",
     "extract_document",
     "ingest",
+    "ingest_codesearchnet",
     "ingest_many",
+    "ingest_stackoverflow",
     "is_bot_actor",
     "iter_event_lines",
     "main",
+    "reservoir_sample",
 ]
 
 GHARCHIVE_FAMILY = "gharchive"
+STACKOVERFLOW_FAMILY = "stackoverflow"
+CODESEARCHNET_FAMILY = "codesearchnet"
 DEFAULT_MAX_DOCS = 2000
+
+# Corpus-expansion sampling design (docs/corpus-sources.md). Each new source
+# contributes the same number of documents as the GH Archive day corpus
+# (out/gharchive/documents-day-v3.jsonl, 17,390 documents), so that a combined
+# ranking differs by source vocabulary rather than by source weight.
+DEFAULT_SAMPLE_SIZE = 17_390
+DEFAULT_SAMPLE_SEED = 20261118
+DEFAULT_MIN_CHARS = 100
+DEFAULT_MIN_ENGLISH_RATIO = 0.6
 USER_AGENT = "vocabops-ingest/0.1 (+https://github.com/)"
 GZIP_MAGIC = b"\x1f\x8b"
 
@@ -435,6 +461,414 @@ def ingest_many(
     return counters
 
 
+# --- corpus-expansion adapters -------------------------------------------
+#
+# Stack Overflow (flax-sentence-embeddings/stackexchange_title_body_jsonl) and
+# CodeSearchNet (code-search-net/code_search_net) feed the Phase 1 combined
+# corpus. Both adapters follow the GH Archive conventions above: stream the
+# source, count every drop under exactly one reason, and write JSONL documents
+# with ``doc_id``/``source_family``/``repo``/``actor``/``text``.
+#
+# Unlike the GH adapter, these adapters sample: each source contributes exactly
+# ``DEFAULT_SAMPLE_SIZE`` documents (parity with the 17,390-document GH Archive
+# day corpus). Gate order is extraction, minimum cleaned length, English ratio,
+# exact-text dedup, then reservoir sampling. Exact-text dedup uses a temporary
+# SQLite index because the sources have millions of rows; a Python set of every
+# digest would not fit in memory. The first occurrence in fixed file order wins,
+# so the result is deterministic.
+
+_CODE_BLOCK_RE = re.compile(r"<pre\b[^>]*>.*?</pre\s*>", re.IGNORECASE | re.DOTALL)
+_INLINE_CODE_TAG_RE = re.compile(
+    r"<code\b[^>]*>.*?</code\s*>", re.IGNORECASE | re.DOTALL
+)
+_FENCE_RE = re.compile(r"(?:```|~~~).*?(?:(?:```|~~~)|\Z)", re.DOTALL)
+_MARKUP_TAG_RE = re.compile(r"<[^>]+>")
+_MARKUP_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_EXTRA_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+
+def _strip_markup(text: str) -> str:
+    """Unescape HTML, drop code blocks/tags/URLs, and collapse blank lines.
+
+    Stack Exchange redistribution text stores markup HTML-escaped
+    (``&lt;pre&gt;``), so unescaping runs before the block patterns. Code
+    blocks that reached the redistribution without markup cannot be identified
+    and remain in the text; the real-run report records how often that happens.
+    """
+    text = html.unescape(text)
+    text = _CODE_BLOCK_RE.sub(" ", text)
+    text = _INLINE_CODE_TAG_RE.sub(" ", text)
+    text = _FENCE_RE.sub(" ", text)
+    text = _MARKUP_TAG_RE.sub(" ", text)
+    text = _MARKUP_URL_RE.sub(" ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n", "\n", text)
+    text = re.sub(r"\n +", "\n", text)
+    text = _EXTRA_BLANK_LINES_RE.sub("\n\n", text)
+    return text.strip()
+
+
+def clean_stackoverflow_text(text: str) -> str:
+    """Clean one Stack Overflow title or body for the corpus."""
+    return _strip_markup(text)
+
+
+def clean_docstring_text(text: str) -> str:
+    """Clean one CodeSearchNet docstring for the corpus."""
+    return _strip_markup(text)
+
+
+def reservoir_sample(
+    values: Iterable[object], size: int, seed: int
+) -> list[object]:
+    """Uniform reservoir sample of ``size`` items from a stream (Algorithm R).
+
+    The input is consumed once. A fixed ``seed`` makes the selection
+    reproducible; the caller sorts the result by document ID before writing, so
+    output bytes do not depend on reservoir slot order.
+    """
+    if size < 0:
+        raise ValueError("sample size must not be negative")
+    rng = random.Random(seed)
+    reservoir: list[object] = []
+    for index, value in enumerate(values):
+        if index < size:
+            reservoir.append(value)
+        else:
+            slot = rng.randrange(index + 1)
+            if slot < size:
+                reservoir[slot] = value
+    return reservoir
+
+
+class _DedupIndex:
+    """Disk-backed exact-text dedup index.
+
+    A SQLite primary key on the 16-byte text digest keeps memory bounded while
+    streaming millions of documents. ``seen`` returns ``True`` when the digest
+    was already inserted, so the first occurrence in stream order wins.
+    """
+
+    def __init__(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.unlink()
+        self._path = path
+        self._connection = sqlite3.connect(path)
+        self._connection.execute("PRAGMA journal_mode=OFF")
+        self._connection.execute("PRAGMA synchronous=OFF")
+        self._connection.execute("PRAGMA cache_size=-65536")
+        self._connection.execute("PRAGMA temp_store=FILE")
+        self._connection.execute(
+            "CREATE TABLE seen (digest BLOB PRIMARY KEY) WITHOUT ROWID"
+        )
+        self._pending = 0
+
+    def seen(self, digest: bytes) -> bool:
+        cursor = self._connection.execute(
+            "INSERT OR IGNORE INTO seen (digest) VALUES (?)", (digest,)
+        )
+        duplicate = cursor.rowcount == 0
+        self._pending += 1
+        if self._pending >= 10_000:
+            self._connection.commit()
+            self._pending = 0
+        return duplicate
+
+    def close(self) -> None:
+        self._connection.commit()
+        self._connection.close()
+        self._path.unlink(missing_ok=True)
+
+
+def _text_digest_bytes(text: str) -> bytes:
+    return hashlib.blake2b(text.strip().encode("utf-8"), digest_size=16).digest()
+
+
+def _passes_gates(
+    text: str,
+    counters: dict[str, int],
+    min_chars: int,
+    min_english_ratio: float,
+) -> bool:
+    """Apply the empty, length and English-ratio gates in fixed order.
+
+    Each rejection increments exactly one counter. Shared by the sequential
+    adapter path and the parallel real-run harness so both see the same gates.
+    """
+    text = text.strip()
+    if not text:
+        counters["skipped_empty"] += 1
+        return False
+    if len(text) < min_chars:
+        counters["skipped_too_short"] += 1
+        return False
+
+    ratio = english_ratio(text)
+    if ratio is None:
+        counters["skipped_no_tokens"] += 1
+        return False
+    if ratio < min_english_ratio:
+        counters["skipped_language"] += 1
+        return False
+    return True
+
+
+def _sample_to_jsonl(
+    records: Iterable[dict[str, object]],
+    output_path: Path,
+    counters: dict[str, int],
+    *,
+    sample_size: int,
+    seed: int,
+    min_chars: int,
+    min_english_ratio: float,
+) -> dict[str, int]:
+    """Apply the shared gates, sample, and write one JSONL document per line."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    dedup = _DedupIndex(output_path.with_name(output_path.name + ".dedup.sqlite"))
+    reservoir: list[dict[str, object]] = []
+    rng = random.Random(seed)
+    try:
+        for record in records:
+            text = str(record.get("text") or "").strip()
+            if not _passes_gates(text, counters, min_chars, min_english_ratio):
+                continue
+
+            if dedup.seen(_text_digest_bytes(text)):
+                counters["skipped_duplicate_text"] += 1
+                continue
+
+            counters["passed_gates"] += 1
+            record["text"] = text
+            index = counters["passed_gates"] - 1
+            if index < sample_size:
+                reservoir.append(record)
+            else:
+                slot = rng.randrange(index + 1)
+                if slot < sample_size:
+                    reservoir[slot] = record
+    finally:
+        dedup.close()
+
+    reservoir.sort(key=lambda item: str(item["doc_id"]))
+    with output_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for record in reservoir:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    counters["sampled"] = len(reservoir)
+    counters["sample_size"] = sample_size
+    return counters
+
+
+def _iter_stackoverflow_records(
+    sources: Sequence[str | Path], counters: dict[str, int]
+) -> Iterator[dict[str, object]]:
+    for source in sorted(sources, key=str):
+        lines = iter_event_lines(source)
+        try:
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    counters["malformed"] += 1
+                    continue
+                if not isinstance(record, Mapping):
+                    counters["malformed"] += 1
+                    continue
+
+                counters["records_seen"] += 1
+                texts = record.get("texts")
+                if not isinstance(texts, list) or not texts:
+                    counters["skipped_empty"] += 1
+                    continue
+                cleaned = [
+                    clean_stackoverflow_text(value)
+                    for value in texts
+                    if isinstance(value, str)
+                ]
+                text = "\n".join(part for part in cleaned if part).strip()
+                if not text:
+                    counters["skipped_empty"] += 1
+                    continue
+
+                tags_value = record.get("tags")
+                tags = (
+                    [tag for tag in tags_value if isinstance(tag, str)]
+                    if isinstance(tags_value, list)
+                    else []
+                )
+                identifier = _text_digest_bytes(text).hex()
+                yield {
+                    "doc_id": document_id(STACKOVERFLOW_FAMILY, identifier),
+                    "source_family": STACKOVERFLOW_FAMILY,
+                    "repo": None,
+                    "actor": None,
+                    "tags": tags,
+                    "text": text,
+                }
+        finally:
+            lines.close()
+
+
+def ingest_stackoverflow(
+    sources: Sequence[str | Path],
+    output_path: Path,
+    *,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    seed: int = DEFAULT_SAMPLE_SEED,
+    min_chars: int = DEFAULT_MIN_CHARS,
+    min_english_ratio: float = DEFAULT_MIN_ENGLISH_RATIO,
+) -> dict[str, int]:
+    """Stream Stack Exchange posts and write a deterministic sample as JSONL.
+
+    The input is the ``texts``/``tags`` JSONL redistribution: ``texts[0]`` is
+    the question title and ``texts[1:]`` the body. Documents are
+    ``title + "\\n" + body``. One document per post.
+    """
+    if sample_size < 0:
+        raise ValueError("sample_size must not be negative")
+    if not sources:
+        raise ValueError("at least one input source is required")
+    if not 0.0 <= min_english_ratio <= 1.0:
+        raise ValueError("min_english_ratio must be between 0 and 1")
+
+    counters = {
+        "input_files": len(sources),
+        "records_seen": 0,
+        "skipped_empty": 0,
+        "skipped_too_short": 0,
+        "skipped_language": 0,
+        "skipped_no_tokens": 0,
+        "skipped_duplicate_text": 0,
+        "passed_gates": 0,
+        "sampled": 0,
+        "malformed": 0,
+    }
+    records = _iter_stackoverflow_records(sources, counters)
+    return _sample_to_jsonl(
+        records,
+        Path(output_path),
+        counters,
+        sample_size=sample_size,
+        seed=seed,
+        min_chars=min_chars,
+        min_english_ratio=min_english_ratio,
+    )
+
+
+def _resolve_parquet_sources(sources: Sequence[str | Path]) -> list[Path]:
+    paths: list[Path] = []
+    for source in sources:
+        path = Path(source)
+        if path.is_dir():
+            paths.extend(sorted(path.glob("*.parquet")))
+        elif path.is_file():
+            paths.append(path)
+        else:
+            raise FileNotFoundError(f"input not found: {path}")
+    if not paths:
+        raise FileNotFoundError("no .parquet files found in the given inputs")
+    return sorted(paths, key=str)
+
+
+def _iter_codesearchnet_records(
+    paths: Sequence[Path], counters: dict[str, int]
+) -> Iterator[dict[str, object]]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:  # pragma: no cover - exercised by CLI only
+        raise RuntimeError(
+            "the codesearchnet adapter needs pyarrow; install it with "
+            "`pip install -e \".[ingest]\"`"
+        ) from exc
+
+    columns = [
+        "repository_name",
+        "func_path_in_repository",
+        "func_name",
+        "func_documentation_string",
+        "language",
+    ]
+    for path in paths:
+        parquet = pq.ParquetFile(path)
+        for batch in parquet.iter_batches(batch_size=4096, columns=columns):
+            data = batch.to_pydict()
+            for row_index in range(batch.num_rows):
+                counters["records_seen"] += 1
+                docstring = data["func_documentation_string"][row_index]
+                if not isinstance(docstring, str):
+                    counters["skipped_empty"] += 1
+                    continue
+                text = clean_docstring_text(docstring)
+                if not text:
+                    counters["skipped_empty"] += 1
+                    continue
+
+                repository = data["repository_name"][row_index] or ""
+                func_path = data["func_path_in_repository"][row_index] or ""
+                func_name = data["func_name"][row_index] or ""
+                language = data["language"][row_index] or path.name.split("-")[0]
+                identifier = f"{repository}/{func_path}#{func_name}"
+                if identifier.strip("#/") == "":
+                    identifier = f"{path.name}/{row_index}"
+                yield {
+                    "doc_id": document_id(CODESEARCHNET_FAMILY, identifier),
+                    "source_family": CODESEARCHNET_FAMILY,
+                    "repo": repository or None,
+                    "actor": None,
+                    "language": language,
+                    "text": text,
+                }
+
+
+def ingest_codesearchnet(
+    sources: Sequence[str | Path],
+    output_path: Path,
+    *,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    seed: int = DEFAULT_SAMPLE_SEED,
+    min_chars: int = DEFAULT_MIN_CHARS,
+    min_english_ratio: float = DEFAULT_MIN_ENGLISH_RATIO,
+) -> dict[str, int]:
+    """Stream CodeSearchNet train parquet files and write a sample as JSONL.
+
+    The document text is ``func_documentation_string`` (the docstring). The
+    programming language is recorded in ``language`` and the source repository
+    in ``repo``. Files are read in sorted path order, one parquet batch at a
+    time.
+    """
+    if sample_size < 0:
+        raise ValueError("sample_size must not be negative")
+    if not 0.0 <= min_english_ratio <= 1.0:
+        raise ValueError("min_english_ratio must be between 0 and 1")
+
+    paths = _resolve_parquet_sources(sources)
+    counters = {
+        "input_files": len(paths),
+        "records_seen": 0,
+        "skipped_empty": 0,
+        "skipped_too_short": 0,
+        "skipped_language": 0,
+        "skipped_no_tokens": 0,
+        "skipped_duplicate_text": 0,
+        "passed_gates": 0,
+        "sampled": 0,
+        "malformed": 0,
+    }
+    records = _iter_codesearchnet_records(paths, counters)
+    return _sample_to_jsonl(
+        records,
+        Path(output_path),
+        counters,
+        sample_size=sample_size,
+        seed=seed,
+        min_chars=min_chars,
+        min_english_ratio=min_english_ratio,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m vocabops.ingest",
@@ -485,53 +919,172 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip documents whose full text exactly matches an already-kept document",
     )
+
+    def add_sample_arguments(subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "--input",
+            required=True,
+            action="append",
+            dest="inputs",
+            metavar="PATH",
+            help=(
+                "local source path or http(s) URL; repeat for several files, "
+                "which are processed as one run in sorted path order"
+            ),
+        )
+        subparser.add_argument(
+            "--output",
+            required=True,
+            type=Path,
+            help="path of the sampled JSONL file to write",
+        )
+        subparser.add_argument(
+            "--sample-size",
+            type=int,
+            default=DEFAULT_SAMPLE_SIZE,
+            help=f"reservoir sample size (default: {DEFAULT_SAMPLE_SIZE})",
+        )
+        subparser.add_argument(
+            "--seed",
+            type=int,
+            default=DEFAULT_SAMPLE_SEED,
+            help=f"reservoir sampling seed (default: {DEFAULT_SAMPLE_SEED})",
+        )
+        subparser.add_argument(
+            "--min-chars",
+            type=int,
+            default=DEFAULT_MIN_CHARS,
+            help=f"drop cleaned text shorter than this (default: {DEFAULT_MIN_CHARS})",
+        )
+        subparser.add_argument(
+            "--min-english-ratio",
+            type=float,
+            default=DEFAULT_MIN_ENGLISH_RATIO,
+            metavar="R",
+            help=(
+                "drop documents whose English token share is below R (0..1) "
+                f"(default: {DEFAULT_MIN_ENGLISH_RATIO})"
+            ),
+        )
+
+    stackoverflow = subparsers.add_parser(
+        "stackoverflow",
+        help="Stack Exchange posts JSONL (texts/tags), sampled",
+    )
+    add_sample_arguments(stackoverflow)
+
+    codesearchnet = subparsers.add_parser(
+        "codesearchnet",
+        help="CodeSearchNet train parquet docstrings, sampled",
+    )
+    add_sample_arguments(codesearchnet)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.max_docs < 0:
-        print("error: --max-docs must not be negative", file=sys.stderr)
+
+    if args.source == "gharchive":
+        if args.max_docs < 0:
+            print("error: --max-docs must not be negative", file=sys.stderr)
+            return 2
+        if args.min_english_ratio is not None and not 0.0 <= args.min_english_ratio <= 1.0:
+            print("error: --min-english-ratio must be between 0 and 1", file=sys.stderr)
+            return 2
+        try:
+            counters = ingest_many(
+                args.inputs,
+                args.output,
+                max_docs=args.max_docs,
+                exclude_bots=args.exclude_bots,
+                min_english_ratio=args.min_english_ratio,
+                dedup_text=args.dedup_text,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:  # network and gzip failures
+            print(
+                f"error: could not read {', '.join(args.inputs)}: {exc}", file=sys.stderr
+            )
+            return 2
+
+        print(f"input files:        {counters['input_files']}")
+        print(f"events seen:        {counters['events_seen']}")
+        print(f"documents written:  {counters['documents_written']}")
+        print(f"documents skipped:  {counters['skipped_no_body']} (no body)")
+        if args.exclude_bots:
+            print(f"skipped:            {counters['skipped_bot']} (bot actor)")
+        if args.min_english_ratio is not None:
+            print(f"skipped:            {counters['skipped_language']} (below english ratio)")
+            if counters["skipped_no_tokens"]:
+                print(f"skipped:            {counters['skipped_no_tokens']} (no alphabetic tokens)")
+        if args.dedup_text:
+            print(f"skipped:            {counters['skipped_duplicate_text']} (duplicate text)")
+        if counters["duplicates"]:
+            print(f"duplicates skipped: {counters['duplicates']}")
+        if counters["missing_id"]:
+            print(f"missing event id:   {counters['missing_id']}")
+        if counters["malformed"]:
+            print(f"malformed lines:    {counters['malformed']}")
+        print(f"output:             {args.output}")
+        return 0
+
+    if args.sample_size < 0:
+        print("error: --sample-size must not be negative", file=sys.stderr)
         return 2
-    if args.min_english_ratio is not None and not 0.0 <= args.min_english_ratio <= 1.0:
+    if args.min_chars < 0:
+        print("error: --min-chars must not be negative", file=sys.stderr)
+        return 2
+    if not 0.0 <= args.min_english_ratio <= 1.0:
         print("error: --min-english-ratio must be between 0 and 1", file=sys.stderr)
         return 2
+
     try:
-        counters = ingest_many(
-            args.inputs,
-            args.output,
-            max_docs=args.max_docs,
-            exclude_bots=args.exclude_bots,
-            min_english_ratio=args.min_english_ratio,
-            dedup_text=args.dedup_text,
-        )
+        if args.source == "stackoverflow":
+            counters = ingest_stackoverflow(
+                args.inputs,
+                args.output,
+                sample_size=args.sample_size,
+                seed=args.seed,
+                min_chars=args.min_chars,
+                min_english_ratio=args.min_english_ratio,
+            )
+        else:
+            counters = ingest_codesearchnet(
+                args.inputs,
+                args.output,
+                sample_size=args.sample_size,
+                seed=args.seed,
+                min_chars=args.min_chars,
+                min_english_ratio=args.min_english_ratio,
+            )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except OSError as exc:  # network and gzip failures
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:  # network, gzip and parquet failures
         print(
             f"error: could not read {', '.join(args.inputs)}: {exc}", file=sys.stderr
         )
         return 2
 
     print(f"input files:        {counters['input_files']}")
-    print(f"events seen:        {counters['events_seen']}")
-    print(f"documents written:  {counters['documents_written']}")
-    print(f"documents skipped:  {counters['skipped_no_body']} (no body)")
-    if args.exclude_bots:
-        print(f"skipped:            {counters['skipped_bot']} (bot actor)")
-    if args.min_english_ratio is not None:
-        print(f"skipped:            {counters['skipped_language']} (below english ratio)")
-        if counters["skipped_no_tokens"]:
-            print(f"skipped:            {counters['skipped_no_tokens']} (no alphabetic tokens)")
-    if args.dedup_text:
-        print(f"skipped:            {counters['skipped_duplicate_text']} (duplicate text)")
-    if counters["duplicates"]:
-        print(f"duplicates skipped: {counters['duplicates']}")
-    if counters["missing_id"]:
-        print(f"missing event id:   {counters['missing_id']}")
+    print(f"records seen:       {counters['records_seen']}")
+    print(f"documents passed:   {counters['passed_gates']} (all gates)")
+    print(f"documents written:  {counters['sampled']} (sampled)")
+    print(f"skipped:            {counters['skipped_empty']} (empty)")
+    print(f"skipped:            {counters['skipped_too_short']} (under min chars)")
+    print(f"skipped:            {counters['skipped_language']} (below english ratio)")
+    if counters["skipped_no_tokens"]:
+        print(f"skipped:            {counters['skipped_no_tokens']} (no alphabetic tokens)")
+    print(f"skipped:            {counters['skipped_duplicate_text']} (duplicate text)")
     if counters["malformed"]:
         print(f"malformed lines:    {counters['malformed']}")
+    print(f"sample:             {counters['sampled']} of {counters['sample_size']} requested")
+    print(f"seed:               {args.seed}")
     print(f"output:             {args.output}")
     return 0
 

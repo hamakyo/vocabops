@@ -1352,4 +1352,170 @@ real headwords now sit above them — the price of correct lemmas, and the reaso
 lemmatizer is now considered settled. Roadmap: no change — the lemmatizer box was already
 checked and no roadmap item names a threshold or the guard.
 
+# Part 8 — combined corpus and source bias
+
+**Status: measurement, not a release.** Parts 1–7 measured one day of GH
+Archive prose. This part measures what happens when the same 17,390 GH
+documents are concatenated with 17,390 CodeSearchNet docstrings and 17,390
+Stack Overflow posts. The corpus, the ranking and the comparison are
+reproducible; no view was rebuilt.
+
+## What was measured
+
+```bash
+cat out/gharchive/documents-day-v3.jsonl \
+    out/codesearchnet/documents-csn-sample.jsonl \
+    out/stackoverflow/documents-so-sample.jsonl \
+  > out/combined/documents-combined-v1.jsonl
+
+.venv/bin/python -m vocabops.pipeline \
+  --input out/combined/documents-combined-v1.jsonl \
+  --output out/combined-rank-v1-df10 \
+  --snapshot-id combined-v1 --min-df 10
+```
+
+| item | value |
+| --- | --- |
+| documents | 52,170 (17,390 per source) |
+| normalized tokens | 4,180,053 |
+| `min_df 10` rows | **9,463** (GH-only v6: 6,134; +3,329, +54.3%) |
+| corpus sha256 | `6acbf476b9a7b6b562d693b1d6561dfd2b5331a2ff4fe9af069342132aa193e1` |
+| ranking sha256 | `cd0ff87aebe3dc49f17aefb8f0c9f237c2fc471898b22df31b42a45b0c107f2b` |
+
+A second pipeline run into a separate directory produced byte-identical
+`ranking.json`, `ranking.csv` and `manifest.json` (`cmp` clean on all three).
+Per-source document and token shares are in
+[corpus-sources.md](corpus-sources.md#combined-corpus-v1-52170-documents):
+GH Archive 33.3% of documents but **52.2% of tokens**, Stack Overflow 33.3% /
+35.3%, CodeSearchNet 33.3% / 12.5%.
+
+## The eight target terms
+
+All eight remain in the ranking. "Rank" is position in the `min_df 10`
+ordering; scores are not comparable across corpora because the smoothing
+denominator changed.
+
+| term | v6 rank | v6 score | combined rank | combined score | GH share | CSN share | SO share |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fallback` | 195 | 7.063 | **905** | 6.476 | 4.0% | 0.2% | 0.2% |
+| `reproduce` | 691 | 5.159 | 2,480 | 4.545 | 7.5% | 0.0% | 0.4% |
+| `persist` | 1,137 | 4.151 | 2,983 | 3.787 | 1.9% | 0.2% | 0.5% |
+| `invoke` | 1,491 | 3.605 | 2,555 | 4.408 | 0.9% | 1.1% | 1.1% |
+| `invalidate` | 1,296 | 3.868 | 3,195 | 3.543 | 0.5% | 0.1% | 0.1% |
+| `propagate` | 1,792 | 3.208 | 3,650 | 3.077 | 0.3% | 0.2% | 0.1% |
+| `retrieve` | 3,326 | 1.684 | **2,878** | 3.935 | 0.3% | 2.6% | 1.9% |
+| `underlying` | 4,226 | 0.845 | 5,744 | 1.377 | 0.4% | 0.6% | 0.2% |
+
+Shares are the fraction of that source's 17,390 documents containing the
+lemmatized term. Seven of eight targets get worse; `retrieve` improves because
+CodeSearchNet and Stack Overflow use it three to nine times more often per
+document than GH prose does. `fallback` remains the only target inside the top
+1,000, and it falls from 195 to 905. This is not evidence against the target
+words; it is evidence that the ranking is dominated by source-specific API
+vocabulary.
+
+## Top-100 overlap
+
+**31 of 100 terms are shared.** 69 leave and 69 enter. The entrants are almost
+entirely platform vocabulary:
+
+`param`, `ioexception`, `rtype`, `dataframe`, `getelementbyid`, `kwarg`,
+`illegalargumentexception`, `dtype`, `tableview`, `typeerror`, `javax`,
+`invalidargumentexception`, `writeline`, `ndarray`, `textview`, `println`,
+`substr`, `oncreate`, `valueerror`, `python2`, `savedinstancestate` …
+
+The leavers are the GH ecosystem watchlist:
+
+`unmerged`, `readback`, `idempotency`, `v0`, `codeql`, `supabase`, `lgtm`,
+`mergeable`, `pnpm`, `prefill`, `rebase`, `picomatch`, `deepseek`, `aarch64`,
+`enqueue`, `fastapi`, `untrack`, `readme`, `frontmatter`, `qwen`, `pydantic` …
+
+The GH terms did not lose frequency: the combined corpus contains every GH
+document. They lost rank because 17,390 docstrings and 17,390 posts added
+higher-specificity competitors.
+
+## Vocabulary-view stability
+
+`data/core500-vocab-v2.jsonl` was built on the v6 GH ranking and was not
+rebuilt.
+
+| depth | core-500 terms present |
+| --- | ---: |
+| combined top 100 | **15** |
+| combined top 500 | **63** |
+| combined top 1,020 | **98 of 500 (19.6%)** |
+| combined top 2,000 | 222 |
+| anywhere in the combined ranking | 497 |
+
+In the GH-only v6 ranking all 500 sat inside the top 1,020 by construction.
+Adding two equal-sized sources leaves **98**. Only 15 survive the top 100.
+Three terms — `unmerged`, `unpinned`, `preprocessing` — no longer exist as
+terms at all: the larger corpus made `unmerge`, `unpin` and `preprocess`
+corpus-attested headwords, so the lemmatizer merged them. The other 399 terms
+still exist but rank below 1,020. The view is stable for its own snapshot and
+not transferable to this corpus.
+
+## Which source's vocabulary rose
+
+Classifying each combined top-1,020 term by the source with the highest
+per-document share:
+
+| source | terms dominant in combined top 1,020 | of the 734 new entrants (v6 rank absent or > 2,000) |
+| --- | ---: | ---: |
+| Stack Overflow | **694** | **641** |
+| GH Archive | 231 | 9 |
+| CodeSearchNet | 95 | 84 |
+
+Stack Overflow is the largest source effect by breadth. CodeSearchNet is small
+in count but produced the single most extreme term. Representative shares:
+
+| term | combined rank | GH share | CSN share | SO share | dominant |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `param` | 1 | 0.1% | **58.8%** | 0.5% | CSN |
+| `rtype` | 4 | 0.0% | **2.2%** | 0.0% | CSN |
+| `dataframe` | 5 | 0.0% | 0.4% | **1.4%** | SO |
+| `getelementbyid` | 6 | 0.0% | 0.0% | **1.1%** | SO |
+| `typeerror` | 17 | 0.1% | 0.2% | **0.9%** | SO |
+| `oncreate` | 27 | 0.0% | 0.0% | **0.6%** | SO |
+| `worktree` | 2 | **1.7%** | 0.0% | 0.0% | GH |
+| `webhook` | 7 | **0.6%** | 0.0% | 0.1% | GH |
+| `sha256` | 11 | **0.8%** | 0.1% | 0.1% | GH |
+| `docstring` | 13 | **0.8%** | 0.1% | 0.0% | GH |
+
+`param` is the headline: it moves from GH rank 629 to **combined rank 1** with
+`tf` 23,009 and `df` 10,706, because 58.8% of CodeSearchNet docstrings contain
+it. The top of the combined ranking is an API-signature and platform-API
+directory (`param`, `ioexception`, `rtype`, `dataframe`, `getelementbyid`,
+`kwarg`), not a vocabulary list. The GH-specific ecosystem terms that
+dominated v6 survive as a minority.
+
+## Verdict on source bias
+
+The bias is now measured rather than assumed, and it is larger than the
+equal-document design suggests:
+
+- **Equal document counts do not equal equal influence.** `se_specificity`
+  weights token frequency, and GH Archive contributes 52.2% of tokens to
+  CodeSearchNet's 12.5%. A source-balanced document sample still yields a
+  GH-weighted ranking.
+- **Adding sources increases competition faster than it adds shared
+  vocabulary.** Rows grow 54.3%, top-100 overlap is 31%, and the GH vocabulary
+  view keeps only 98 of 500 terms at its own depth.
+- **The target-term result moves in opposite directions by source.** `retrieve`
+  improves because CSN/SO use it; `fallback`, `reproduce` and `persist` fall
+  because platform exception/API terms outrank them. Any "target coverage"
+  claim must name its corpus.
+- **The vocabulary and technical views should not be rebuilt on this ranking
+  yet.** A combined Core 500 would mostly encode Java/Android, JavaScript DOM,
+  PHP and iOS API names plus docstring conventions. The next corpus experiment
+  should test source balancing or per-source rate normalization before another
+  view review.
+
+Phase 1's source-adapter goal is met: all three sources ingest reproducibly
+from fixed snapshots, with documented routes, gates and yields. Phase 2's exit
+condition is still not met, and this part adds a reason: the ranking is highly
+sensitive to source mixture, so a corpus with three sources needs a stated
+weighting policy before its top 500 can be presented as software-engineering
+English.
+
 
