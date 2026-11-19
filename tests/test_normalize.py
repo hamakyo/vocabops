@@ -4,6 +4,7 @@ from vocabops.ingest import ENGLISH_RATIO_MIN_FREQUENCY
 from vocabops.normalize import (
     ATTESTATION_MIN_DOCUMENTS,
     LEMMA_MIN_FREQUENCY,
+    MIN_CANDIDATE_FREQUENCY_RATIO,
     attested_headwords,
     clean_text,
     lemmatize,
@@ -205,13 +206,20 @@ def test_lemmatize_merges_inflections_below_the_old_floor():
     assert lemmatize("retries") == "retry"
 
 
-def test_lemmatize_documents_the_known_stem_fragment_defects():
-    # Lowering the floor to 3e-07 has three known bad outcomes: wordfreq lists
-    # the bare stem just above the floor, so the suffix rule accepts it. These
-    # assertions pin current behaviour; they are defects, not goals.
-    assert lemmatize("always") == "alway"  # "alway" 3.89e-07, obsolete word
-    assert lemmatize("speed") == "spe"  # "spe" 5.75e-07, a fragment
-    assert lemmatize("unbounded") == "unbound"  # "unbound" 7.08e-07, other word
+def test_lemmatize_blocks_bare_stem_merges_by_frequency_ratio():
+    # These used to be accepted because wordfreq lists the bare stem just
+    # above the lemma floor. The ratio guard rejects them: the candidate keeps
+    # far less than 0.02 of the token's frequency.
+    assert lemmatize("always") == "always"  # alway ratio 0.0007
+    assert lemmatize("speed") == "speed"  # spe ratio 0.006
+    assert lemmatize("ceiling") == "ceiling"  # ceil ratio 0.005
+    # Non-goal, unchanged: both are real words, so the ratio is 2.04.
+    assert lemmatize("unbounded") == "unbound"
+
+
+def test_guard_constants_are_pinned():
+    assert MIN_CANDIDATE_FREQUENCY_RATIO == 0.02
+    assert LEMMA_MIN_FREQUENCY == 3e-07
 
 
 def test_lemmatize_target_terms_stay_in_base_form():
@@ -344,9 +352,39 @@ def test_attested_dedup_merges_its_inflections():
     assert lemmatize("dedups", attested) == "dedup"
 
 
-def test_attestation_does_not_add_new_alway_merges():
-    # "alway" stays the one known bad merge from the wordfreq path (3.89e-07).
-    # Attestation must not create another producer of it.
+def test_attestation_does_not_override_the_ratio_guard():
+    # "ceil" is a real corpus form (a function name) and an attested candidate
+    # for "ceiling". Attestation must not turn it into a lemma: the ratio guard
+    # governs every acceptance.
+    texts = [
+        "Use ceil for rounding up.",
+        "They call ceil here.",
+        "Ceil again in the parser.",
+        "The ceiling is low.",
+    ]
+    token_documents = [tokenize(clean_text(text)) for text in texts]
+    attested = attested_headwords(token_documents)
+    assert "ceil" in attested
+    assert lemmatize("ceiling", attested) == "ceiling"
+
+
+def test_guard_keeps_real_merges_on_both_validation_paths():
+    # Wordfreq-valid merges above the threshold still merge.
+    assert lemmatize("credentials") == "credential"
+    assert lemmatize("embedded") == "embed"
+    assert lemmatize("fallbacks") == "fallback"
+    assert lemmatize("detached") == "detach"
+    assert lemmatize("encrypted") == "encrypt"
+    # Attested-only merges still merge: nonzero token frequency with a healthy
+    # ratio (rebased -> rebase 2.19), and the zero-frequency bypass
+    # (deduped -> dedup, both 0.0).
+    assert lemmatize("rebased", frozenset({"rebase"})) == "rebase"
+    assert lemmatize("deduped", frozenset({"dedup"})) == "dedup"
+
+
+def test_guard_leaves_no_producer_of_alway():
+    # Before the guard the wordfreq path produced "alway" from "always". After
+    # it, no path produces "alway", attested or not.
     texts = [
         "It is always the same rebase.",
         "Always rebase before merging.",
@@ -355,12 +393,10 @@ def test_attestation_does_not_add_new_alway_merges():
     ]
     token_documents = [tokenize(clean_text(text)) for text in texts]
     attested = attested_headwords(token_documents)
-    assert "always" in attested
-
     producers = {
         token
         for tokens in token_documents
         for token in tokens
         if lemmatize(token, attested) == "alway"
     }
-    assert producers == {"always"}
+    assert producers == set()

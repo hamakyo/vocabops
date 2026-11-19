@@ -9,8 +9,8 @@ that every step is inspectable and reproducible:
 4. drop URLs
 5. lowercase
 6. tokenize on word characters
-7. lemmatize with an irregular map, suffix-rule candidates and a wordfreq
-   dictionary check
+7. lemmatize with an irregular map, suffix-rule candidates, a wordfreq
+   dictionary check and a frequency-ratio guard against bare stems
 8. remove English stopwords
 
 The lemmatizer is dictionary-validated rather than a full morphological
@@ -32,6 +32,7 @@ __all__ = [
     "STOPWORDS",
     "IRREGULAR_LEMMAS",
     "LEMMA_MIN_FREQUENCY",
+    "MIN_CANDIDATE_FREQUENCY_RATIO",
     "ATTESTATION_MIN_DOCUMENTS",
     "clean_text",
     "tokenize",
@@ -177,11 +178,47 @@ _VOWELS = frozenset("aeiou")
 # Measured against the 24-hour GH Archive day corpus, the old floor turned 925
 # of 66,045 distinct raw tokens (1.4% of types, 0.3% of occurrences) into the
 # wrong lemma. Lowering it fixed 22 of the 25 highest-frequency cases but also
-# admits a few stem fragments that wordfreq happens to list just above 3e-07:
-# "always" -> "alway" (3.89e-07), "speed" -> "spe" (5.75e-07) and "unbounded"
-# -> "unbound" (7.08e-07). Those three are accepted, documented defects; the
-# suffix rules have no guard against them (see docs/prototype.md).
+# ``3e-07`` admits a few candidates that wordfreq happens to list just above
+# 3e-07: "always" -> "alway" (3.89e-07), "speed" -> "spe" (5.75e-07) and
+# "unbounded" -> "unbound" (7.08e-07). The first two are stem fragments and are
+# rejected by the ratio guard below; "unbounded" -> "unbound" is two real words
+# and stays a documented non-goal (see ``MIN_CANDIDATE_FREQUENCY_RATIO``).
 LEMMA_MIN_FREQUENCY = 3e-07
+
+# How much rarer than the token a candidate may be before it is rejected as a
+# bare stem.
+#
+# A suffix rule that strips an ending can land on a fragment that wordfreq
+# still lists: "always" -> "alway" (obsolete word, 3.89e-07), "speed" -> "spe"
+# (5.75e-07), "ceiling" -> "ceil" (7.24e-08, a function name; reached through
+# corpus attestation after the suffix rule proposes it). Frequency alone cannot
+# separate those from real lemmas, but the *ratio* between candidate and token
+# can: a real merge keeps a substantial share of the inflected form's
+# frequency, while a fragment keeps almost none.
+#
+# Calibration on wordfreq English frequencies, measured for this corpus:
+#
+#   good merges    credentials -> credential  0.102  (the minimum)
+#                  embedded    -> embed        0.112
+#                  detached    -> detach       0.158
+#                  encrypted   -> encrypt       0.219
+#                  all other observed good merges >= 0.32
+#   bad merges     always      -> alway        0.0007
+#                  speed       -> spe          0.006
+#                  ceiling     -> ceil         0.005
+#
+# ``0.02`` sits roughly 3x above the worst bad case and 5x below the weakest
+# good case, so it is a gap cut, not a tuned one. A token with wordfreq 0
+# bypasses the ratio test: the zero-frequency dedup family ("deduped" ->
+# "dedup", both 0.0) has no ratio to judge, and attestation governs there.
+#
+# The guard applies to every candidate acceptance, including attested ones:
+# corpus attestation must not override it, because ``ceil`` is attested as a
+# function name for the same reason it is a bad lemma for ``ceiling``.
+#
+# Known non-goal: "unbounded" -> "unbound" has ratio 2.04 because both are real
+# words; the guard cannot and should not block it.
+MIN_CANDIDATE_FREQUENCY_RATIO = 0.02
 
 # How many documents must contain a raw form before the corpus itself counts as
 # evidence that the form is a real headword of this domain.
@@ -339,11 +376,15 @@ def lemmatize(token: str, attested: frozenset[str] = frozenset()) -> str:
     rules, then validation. A candidate is accepted when its English frequency
     is at least :data:`LEMMA_MIN_FREQUENCY`, or when the corpus attests it (it
     occurs standalone in at least :data:`ATTESTATION_MIN_DOCUMENTS` documents,
-    passed in as ``attested``). Among accepted candidates the most frequent
-    wins, so a wordfreq-valid candidate always beats an attested-only one with
-    lower frequency; attestation only decides when no wordfreq-valid candidate
-    exists. If no candidate survives, the original token is returned, because a
-    real inflected word is always a safer answer than an invented stem.
+    passed in as ``attested``). Every accepted candidate must also pass the
+    bare-stem ratio guard: when the token itself has a nonzero wordfreq, the
+    candidate's frequency must be at least
+    :data:`MIN_CANDIDATE_FREQUENCY_RATIO` of it. Among surviving candidates the
+    most frequent wins, so a wordfreq-valid candidate always beats an
+    attested-only one with lower frequency; attestation only decides when no
+    wordfreq-valid candidate exists. If no candidate survives, the original
+    token is returned, because a real inflected word is always a safer answer
+    than an invented stem.
 
     ``attested`` defaults to the empty set, which reproduces the pure
     single-token behaviour for callers without a corpus: the corpus pre-pass is
@@ -365,9 +406,18 @@ def lemmatize(token: str, attested: frozenset[str] = frozenset()) -> str:
 
     best: str | None = None
     best_frequency = -1.0
+    token_frequency = _frequency(token)
     for candidate in sorted(_derived_candidates(token)):
         frequency = _frequency(candidate)
         if frequency >= LEMMA_MIN_FREQUENCY or candidate in attested:
+            # Bare-stem guard: a candidate far rarer than the token it came
+            # from is a fragment, not a lemma. Tokens at wordfreq 0 have no
+            # ratio to test; attestation decides for that family.
+            if (
+                token_frequency > 0
+                and frequency / token_frequency < MIN_CANDIDATE_FREQUENCY_RATIO
+            ):
+                continue
             if frequency > best_frequency:
                 best = candidate
                 best_frequency = frequency
