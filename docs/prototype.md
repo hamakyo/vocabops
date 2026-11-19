@@ -71,7 +71,7 @@ The implementation and the same formula live in the docstring of `src/vocabops/s
 
 Candidates for `-ed` / `-ing` tokens: the bare stem, the stem with a restored final `e`, and the doubled-consonant-undone form of both (`merged` → `merg`, `merge`; `running` → `runn`, `runne`, `run`, `rune`). Candidates for `-s` forms: the plain `-s` strip, `-ies` → `-y`, `-sses` / `-shes` / `-ches` / `-xes` / `-zes` / `-ses` minus `-es`, plus the stem and `stem + "e"` variants where they apply (`caches` → `cach`, `cache`; `aliases` → `aliase`, `alias`).
 
-A derived candidate counts as real when `word_frequency(candidate, "en") >= 1e-06`; among accepted candidates the most frequent wins. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
+A derived candidate counts as real when `word_frequency(candidate, "en") >= 1e-06`; among accepted candidates the most frequent wins. The same `ENGLISH_WORD_MIN_FREQUENCY` constant is used by the ingest English-ratio filter, so the two thresholds cannot drift apart. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
 
 | token | candidates | result |
 | --- | --- | --- |
@@ -203,16 +203,19 @@ Target-term positions with `min_df = 3` (4,235 → 4,146 rows):
 
 Most terms keep their frequency and move up only because the vocabulary is smaller. `fallback` loses five occurrences because `fallbacks` no longer merges into it: `fallback` itself is below the `1e-06` validation threshold (4.57e-07), so its plural is returned unchanged and appears as its own row (`fallbacks`, `tf` 5, `df` 3).
 
-## Bot and non-English filters at ingest
+## Bot, non-English and duplicate-text filters at ingest
 
-Two opt-in ingest flags remove automation and non-English prose before anything reaches the pipeline. Both are off by default, so the plain command still writes every text-bearing event.
+Three opt-in ingest flags remove automation, non-English prose and exact duplicate text before anything reaches the pipeline. All are off by default, so the plain command still writes every text-bearing event.
 
 - `--exclude-bots` — drop the event when the actor login ends with `[bot]`, or when it is in the explicit `BOT_LOGINS` set. That set currently holds only `Copilot`, GitHub's Copilot bot account, which carries no suffix. A login that merely contains `bot` (`botanist`, `robotfan`) is a human account and is kept.
-- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total` where a token is known when `word_frequency(token, "en") > 0`. Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
+- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total`. A token is known only when `word_frequency(token, "en") >= 1e-06`, the shared `ENGLISH_WORD_MIN_FREQUENCY` constant defined in `src/vocabops/normalize.py` and imported here; the lemmatizer's candidate check uses the same constant, so the two thresholds cannot drift apart. Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
+- `--dedup-text` — after the other filters, drop a document whose stripped full text is byte-identical to a document already kept in the run. Comparison is `sha256` of `text.strip()` and the first occurrence in file order wins. Off by default. This is exact duplication only: near-duplicates, and templated documents that share a long prefix but differ in the tail, are not detected.
 
-Both filters run at fixed positions: event-type/body extraction, then bot filter, then language filter, then event-ID checks, deduplication and `--max-docs`. Every dropped event lands in exactly one counter, and `ingest()` returns them all: `events_seen`, `documents_written`, `skipped_no_body`, `skipped_bot`, `skipped_language`, `skipped_no_tokens`, `duplicates`, `malformed`, `missing_id`. Neither flag touches normalization, the lemmatizer, `se_specificity`, or the ranking; exclusion happens only here.
+Both filters run at fixed positions: event-type/body extraction, then bot filter, then language filter, then event-ID checks, then optional exact-text deduplication, then `--max-docs`. Every dropped event lands in exactly one counter, and `ingest()` returns them all: `events_seen`, `documents_written`, `skipped_no_body`, `skipped_bot`, `skipped_language`, `skipped_no_tokens`, `skipped_duplicate_text`, `duplicates`, `malformed`, `missing_id`. Neither flag touches normalization, the lemmatizer, `se_specificity`, or the ranking; exclusion happens only here.
 
-### Filtered real run
+### Filtered real run (old token rule)
+
+This run used the original `word_frequency(token, "en") > 0` test and is kept as the comparison baseline. The current rule is applied in the clean run below.
 
 ```bash
 .venv/bin/python -m vocabops.ingest gharchive \
@@ -308,9 +311,99 @@ The filters are login- and token-membership-based, not classifier-based, so the 
 | 5 | `ventura8` |
 | 4 | `viniciussucupira` |
 
-`atolis-hq-agent` is an agent account: all 20 documents are templated design/plan prose ("Design: namespaces with pack-defined kinds … ## Status"). It survives because it carries no `[bot]` suffix and is not in `BOT_LOGINS`. Adding accounts like it is a manual edit to that set, not a rule.
+`atolis-hq-agent` is an agent account: all 20 documents are templated design/plan prose ("Design: namespaces with pack-defined kinds … ## Status"). Their extracted text is byte-identical across all 20 events; the clean run below removes 19 of them with exact-text dedup.
 
-The language filter reliably removes CJK text: the old `また` and `初筛` rows are gone, and no CJK term appears anywhere in the filtered ranking. It does not remove Latin-script non-English. `código` is still rank 8 (`tf` 34, `df` 12) and `repositório`, `pruebas`, `validación` and others remain in the top 30. The cause is the rule itself: `word_frequency(token, "en") > 0` counts a token as English at any nonzero frequency, and `wordfreq`'s English list contains Portuguese and Spanish function words and loanwords at tiny frequencies (`código` is 1.7e-08 in `en`). The 12 documents that still contain `código` score 0.656–0.791, above the 0.6 cut, because Portuguese `do`, `para`, `de`, `a`, `que`, `uma` and `por` all count as known English tokens. Raising the threshold would not fix it (the scores sit well above 0.6); a per-token English rate floor or script check would be the next step, and neither is in this round.
+The language filter reliably removes CJK text: the old `また` and `初筛` rows are gone from the top of this ranking. It does not remove Latin-script non-English *under the old token rule*. `código` is still rank 8 (`tf` 34, `df` 12) and `repositório`, `pruebas`, `validación` and others remain in the top 30. The cause was the rule itself: `word_frequency(token, "en") > 0` counted a token as English at any nonzero frequency, and `wordfreq`'s English list contains Portuguese and Spanish function words and loanwords at tiny frequencies (`código` is 1.7e-08 in `en`). The 12 documents that still contained `código` scored 0.656–0.791, above the 0.6 cut, because Portuguese `do`, `para`, `de`, `a`, `que`, `uma` and `por` all counted as known English tokens. The shared `1e-06` floor described above replaces that test; see the clean run for the result.
+
+### Clean run: shared English floor and exact-text dedup
+
+The token test now uses the same "real English word" floor as the lemmatizer. `src/vocabops/normalize.py` defines `ENGLISH_WORD_MIN_FREQUENCY = 1e-06`; its lemmatizer checks against that constant and `src/vocabops/ingest.py` imports the same object, so the two thresholds cannot drift apart silently. A token counts as English only when `word_frequency(token, "en") >= 1e-06`.
+
+The floor is two orders of magnitude above wordfreq's noise floor for non-words (`merg` 1.6e-08, `requir` 3.3e-08) and above the trace frequencies at which wordfreq lists Spanish and Portuguese words (`código` 1.7e-08, `repositório` 0.0). That trace presence was exactly what defeated the old `> 0` rule and put `código` at rank 8 of the filtered ranking. The floor stays at or below the technical lemmas the corpus needs (`invalidate` is exactly 1e-06, `invoke` 2.14e-06, `cache` 4.27e-06), but it is still a general-English judgement: `invalidation` (1.7e-07) and `fallback` (4.57e-07) fall below it, so an otherwise English document containing them scores slightly under 1.0 and still clears the 0.6 document cut comfortably.
+
+`--dedup-text` adds exact-text deduplication after the language filter and the event-ID checks. Two events with different IDs but byte-identical stripped text produce one document (the first in file order); the dropped event is counted as `skipped_duplicate_text` and reported as `skipped: N (duplicate text)`. This is exact duplication only — near-duplicates and templates whose tails differ are future work.
+
+```bash
+.venv/bin/python -m vocabops.ingest gharchive \
+  --input out/gharchive/2026-11-18-3.json.gz \
+  --output out/gharchive/documents-clean.jsonl \
+  --max-docs 2000 --exclude-bots --min-english-ratio 0.6 --dedup-text
+
+.venv/bin/python -m vocabops.pipeline \
+  --input out/gharchive/documents-clean.jsonl \
+  --output out/gharchive-rank-df3-clean \
+  --snapshot-id gharchive-2026-11-18-3-proto --min-df 3
+```
+
+Counters over the same 3,319 events, in filter order:
+
+| counter | count |
+| --- | --- |
+| events seen | 3,319 |
+| documents written | 658 |
+| skipped: no body | 1,874 |
+| skipped: bot actor | 603 |
+| skipped: below english ratio | 156 |
+| skipped: no alphabetic tokens | 1 |
+| skipped: duplicate text | 27 |
+
+The totals close: 3,319 − 1,874 − 603 − 156 − 1 − 27 = 658. The floor drops 55 more documents than the old rule (101 → 156) while keeping 685 of the old 740, so the duplicate-text filter removes 27 of those 685 and leaves 658.
+
+The clean corpus is 658 documents and 86,482 normalized tokens, down from 740 documents and 118,572 tokens. The 55 language drops account for 11,360 tokens; the 27 duplicate-text drops account for 20,730, of which 20,406 are 19 copies of one 1,074-token document (see `namespace` below). The `min_df = 3` ranking has 2,513 rows (7,616 at `min_df = 1`), down from 2,938 (10,529). Re-running the ingest and the ranking produced byte-identical files.
+
+Top 30 of the clean `min_df = 3` ranking, with the position the same term held in `out/gharchive-rank-df3-filtered` (`-` means it was below that 2,938-row cut):
+
+| # | term | tf | df | filtered # |
+| --- | --- | --- | --- | --- |
+| 1 | `sha256` | 50 | 7 | 1 |
+| 2 | `worktree` | 24 | 13 | 3 |
+| 3 | `stacksjs` | 23 | 18 | 4 |
+| 4 | `rustsec` | 13 | 3 | 18 |
+| 5 | `18t03` | 11 | 7 | 19 |
+| 6 | `docstring` | 11 | 5 | 20 |
+| 7 | `userlibs` | 10 | 5 | 28 |
+| 8 | `dependabot` | 9 | 4 | 31 |
+| 9 | `configmap` | 8 | 3 | 39 |
+| 10 | `vercel` | 8 | 3 | 35 |
+| 11 | `vitest` | 8 | 6 | 43 |
+| 12 | `yml` | 8 | 7 | 44 |
+| 13 | `50z` | 7 | 3 | 46 |
+| 14 | `clamd` | 7 | 3 | 48 |
+| 15 | `nextest` | 7 | 3 | 55 |
+| 16 | `pytest` | 7 | 7 | 42 |
+| 17 | `toml` | 7 | 5 | 58 |
+| 18 | `77bits` | 6 | 3 | 61 |
+| 19 | `aarch64` | 6 | 3 | 62 |
+| 20 | `allowlist` | 6 | 4 | 64 |
+| 21 | `ctest` | 6 | 5 | 66 |
+| 22 | `nemoclaw` | 6 | 3 | 71 |
+| 23 | `runbook` | 6 | 4 | 75 |
+| 24 | `worktrees` | 6 | 4 | 79 |
+| 25 | `20z` | 5 | 3 | 89 |
+| 26 | `deepseek` | 5 | 4 | 92 |
+| 27 | `frontmatter` | 5 | 5 | 2 |
+| 28 | `rwelibs` | 5 | 5 | 106 |
+| 29 | `serviceaccount` | 5 | 3 | 107 |
+| 30 | `unmerged` | 5 | 5 | 109 |
+
+All 18 Spanish/Portuguese rows in the old top 30 (`repositório`, `código`, `fluxo`, `pruebas`, `referencia`, `aceptación`, `criterios`, `regra`, `validación`, `verificar`, `selección`, `contexto`, `contrato`, `critérios`, `mantener`, `origem`, `aprobado`, `arquitetura`) are gone from the clean top 50. At `min_df = 3` they are gone from the ranking entirely, because the documents carrying them fall below the 0.6 ratio. At `min_df = 1`, `fluxo` and `referencia` survive in the tail (a couple of mixed-language documents still score at or above 0.6), but neither is near the top. No non-ASCII term appears in the clean top 50.
+
+Target-term positions with `min_df = 3` (2,938 → 2,513 rows). `retrieve` and `invalidate` are absent from both `min_df = 3` rankings (document frequency 2 and 1); their `min_df = 1` positions show they are still in the corpus.
+
+| term | filtered rank | clean rank | filtered tf / df | clean tf / df | clean rank at `min_df = 1` |
+| --- | --- | --- | --- | --- | --- |
+| `retrieve` | — | — | 3 / 2 | 3 / 2 | 5,049 |
+| `persist` | 1,016 | 604 | 13 / 9 | 13 / 9 | 3,553 |
+| `invoke` | 1,194 | 754 | 5 / 5 | 5 / 5 | 3,883 |
+| `propagate` | 1,119 | 682 | 3 / 3 | 3 / 3 | 3,742 |
+| `reproduce` | 581 | 250 | 77 / 61 | 77 / 61 | 2,681 |
+| `invalidate` | — | — | 2 / 1 | 2 / 1 | 3,816 |
+| `fallback` | 258 | 102 | 84 / 53 | 41 / 31 | 2,070 |
+| `underlying` | 2,337 | 1,860 | 3 / 3 | 3 / 3 | 6,134 |
+
+Most terms keep their frequency and move up only because the vocabulary shrinks (2,938 → 2,513 rows). `fallback` also loses 43 occurrences: the duplicated agent document contained `fallback` twice per copy (40 occurrences across the 20 copies), so removing 19 copies accounts for 38 of the lost occurrences.
+
+The `namespace` result was not what the exact-only limitation predicted. The 20 `atolis-hq-agent` documents are not merely prefix-sharing variants: their extracted text is byte-identical — one unique string of 11,705 characters, all 20 with the same `sha256` after stripping. Exact-text dedup therefore removes 19 of them (20,406 tokens) and leaves one. `namespace` falls from rank 9 (`tf` 665, `df` 28) to rank 83 (`tf` 51, `df` 8); `namespaces` (rank 13, `tf` 180, `df` 20) disappears from the `min_df = 3` ranking entirely. Two other top-30 rows that were entirely supplied by that cluster also disappear: `004b` (rank 6, `tf` 20, `df` 20) and `groupable` (rank 7, `tf` 20, `df` 20). `frontmatter` drops from rank 2 (`tf` 25, `df` 25) to rank 27 (`tf` 5, `df` 5). Near-duplicate detection is still not implemented; this particular cluster simply happened to be exact duplication.
 
 ## Known limitations
 
@@ -319,6 +412,6 @@ The language filter reliably removes CJK text: the old `また` and `初筛` row
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
 - **Thin smoothing.** With a corpus this small, `alpha = 1` and `vocab_size` in the denominator dominate absolute scores; only the ordering is meaningful. One-off rare words can outrank repeated target terms.
-- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors and low-English-ratio documents, but there is no minimum term frequency, no template/boilerplate filter, and no stopword extension for product names. Automation without a `[bot]` login (`atolis-hq-agent`) and Latin-script non-English (`código`) still reach the top.
+- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the shared `1e-06` English-token floor, and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms to the tail.
 
 Reproducibility rules for runs of this pipeline are in [Pipeline conventions](pipeline-conventions.md).
