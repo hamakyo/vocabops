@@ -43,7 +43,22 @@ Outputs (gitignored under `out/`):
 - `ranking.csv` — the same rows, same order
 - `manifest.json` — `snapshot_id`, `pipeline_version`, `sources`, `general_baseline`, `documents`, `tokens`
 
-The pipeline writes no timestamps, so two runs on the same inputs produce byte-identical files.
+`--min-df N` filters emitted rows. `--ranking-method pooled` (default) is the
+single-table `se_specificity` ranking above. `--ranking-method borda` groups
+documents by `source_family`, ranks each source's own `df >= min_df` terms by
+that source's `se_specificity`, and fuses the lists: a term contributes
+`rank / listed_count` in a source that lists it and `1.0` in one that does not;
+the three contributions are summed, lower is better. In borda mode the
+`se_specificity` column holds that fused sum (not nats), `ranking.json` is
+sorted by it ascending, and the manifest adds `ranking_method`,
+`borda_variant`, `score_semantics` and each source's document/token/listed
+counts. Borda mode needs at least two source families and fails rather than
+falling back to pooled.
+
+The pipeline writes no timestamps, so two runs on the same inputs produce
+byte-identical files. Pooled output is unchanged by the borda addition:
+`out/gharchive-rank-day-v6-df10` and `out/combined-rank-v1-df10` reproduce
+byte-identically.
 
 ## se_specificity
 
