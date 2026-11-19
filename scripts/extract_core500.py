@@ -13,9 +13,9 @@ The output is byte-identical for the same input ranking:
         --output data/core500-v0.jsonl
 
 The candidate is derived from the 24-hour GH Archive day corpus at
-``--min-df 10`` with the shared ``ENGLISH_WORD_MIN_FREQUENCY`` floor; see
-``docs/core500-evaluation.md``. Regenerate the ranking first (see
-``docs/prototype.md``) if it is missing.
+``--min-df 10``; the ranking was built with the lemmatizer's
+``LEMMA_MIN_FREQUENCY`` floor (3e-07). See ``docs/core500-evaluation.md``.
+Regenerate the ranking first (see ``docs/prototype.md``) if it is missing.
 """
 
 from __future__ import annotations

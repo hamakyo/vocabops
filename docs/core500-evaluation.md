@@ -527,3 +527,217 @@ language test, because wordfreq's English list contains French and Spanish words
 that level. The next round should decide the language filter by script/stopword
 evidence rather than by per-token frequency, and add a guard against stem fragments
 (`alway`). Keep both v0 and v0.1 in `data/` as measurements.
+
+# Part 3 — v0.2
+
+**Status: candidate artifact, not a published dataset.** `data/core500-v0.2.jsonl`
+takes the tokenizer from v0.1 and the corpus from v0, by giving the ingest English-ratio
+test its own floor again. It is the first candidate whose corpus contains no
+floor-admitted French/Spanish block. It is still one day of GH Archive prose, not Core
+500. Parts 1 and 2 are kept unchanged as history; where they describe the two floors as
+one shared constant, Part 3 supersedes them.
+
+## What changed: two questions, two floors
+
+The lemmatizer and the ingest language filter were asking different questions with one
+number:
+
+- the lemmatizer asks *"is this candidate a plausible English headword?"*. `3e-07` is
+  the right answer: it is below the technical lemmas the corpus needs (`fallback`
+  4.57e-07, `encode` 8.91e-07) and above the stem fragments that should not become
+  lemmas. The round-6/7 evidence for it still holds;
+- the ingest ratio test asks *"is this token evidence that the document is English?"*.
+  At `3e-07` it is too loose: wordfreq's English list contains French and Spanish words
+  at that level (`cette` 1.78e-07, `esta` 6.92e-07), so the ratio silently counted
+  foreign function words as English evidence. Round 5 had already measured that
+  `1e-06` works: every Spanish and Portuguese document dropped from the 1-hour corpus.
+
+Round 8's regression is the cost of sharing: the day corpus at `3e-07` gained 284
+French/Spanish documents, and non-English rows in the top 500 rose from v0's 17 to
+v0.1's 78 (the "14" in the round-8 brief is the subset that survived into v0.1; three
+Italian rows fell below its cut). The fix is therefore not a new filter design, it is
+to stop pretending the two thresholds are one decision. The constants are now:
+
+| constant | module | value | role |
+| --- | --- | --- | --- |
+| `LEMMA_MIN_FREQUENCY` | `src/vocabops/normalize.py` | `3e-07` | validates candidate lemmas |
+| `ENGLISH_RATIO_MIN_FREQUENCY` | `src/vocabops/ingest.py` | `1e-06` | counts a token as document-level English evidence |
+
+The old rationale — one constant so that "the two thresholds cannot drift apart" — was
+wrong and is corrected in `docs/prototype.md`: drift was never the risk. The risk was
+that one value would be forced to answer two questions, and it was. This also means
+Part 2's closing suggestion (decide the language filter by script/stopword evidence)
+was not taken this round: the measured frequency decoupling was tried first, and it
+recovered the round-5 behaviour without new machinery. Script/stopword evidence remains
+the right next step for the mixed-language residue (below).
+
+## What was measured
+
+| item | value |
+| --- | --- |
+| corpus | 24 hourly GH Archive files, 2026-11-18 00:00–23:59 UTC |
+| documents | 17,390 |
+| normalized tokens | 2,181,317 |
+| ingest filters | `--exclude-bots --min-english-ratio 0.6 --dedup-text --max-docs 100000` |
+| language-test floor | `1e-06` (`ENGLISH_RATIO_MIN_FREQUENCY`) |
+| lemma validation floor | `3e-07` (`LEMMA_MIN_FREQUENCY`) |
+| ranking cut | `--min-df 10` → 6,182 rows |
+| candidate | first 500 rows, ranks 1–500 (cut score 5.919) |
+| snapshot id | `gharchive-2026-11-18-day-v3` |
+| corpus file | `out/gharchive/documents-day-v3.jsonl`, sha256 `74027bb1a605104c6800a7a62731eea1d7a9394cab5ae33f1e3b34ef8207e9ab` |
+| candidate file | `data/core500-v0.2.jsonl`, sha256 `97565cc9a871aa56a1c308056a42991c98cba44eda8ed50e49b2ea00c0974c74` |
+| audit file | `data/core500-v0.2-audit.jsonl`, sha256 `2b57c413715f8d5085921afc90a4f00301fb8cf160a2b9413230db22bb23ab0d` |
+
+## Ingest counters: v1, v2, v3
+
+v1 is the `1e-06` round-5 run with the old tokenizer; v2 is the `3e-07` shared-floor run
+with the new tokenizer; v3 is this run.
+
+| counter | v1 (`1e-06`) | v2 (`3e-07`) | v3 (`1e-06`) | v3 − v1 | v3 − v2 |
+| --- | --- | --- | --- | --- | --- |
+| input files | 24 | 24 | 24 | 0 | 0 |
+| events seen | 121,837 | 121,837 | 121,837 | 0 | 0 |
+| documents written | 17,390 | 17,674 | 17,390 | 0 | −284 |
+| skipped: no body | 84,710 | 84,710 | 84,710 | 0 | 0 |
+| skipped: bot actor | 14,874 | 14,874 | 14,874 | 0 | 0 |
+| skipped: below english ratio | 3,954 | 3,660 | 3,954 | 0 | +294 |
+| skipped: no alphabetic tokens | 18 | 18 | 18 | 0 | 0 |
+| skipped: duplicate text | 891 | 901 | 891 | 0 | −10 |
+| normalized tokens | 2,188,397 | 2,225,982 | 2,181,317 | −7,080 | −44,665 |
+
+The totals close: 121,837 − 84,710 − 14,874 − 3,954 − 18 − 891 = 17,390.
+
+**v3 is byte-identical to v1** (`cmp` clean, same sha256). That is the strongest
+statement this round can make: returning the document test to `1e-06` reproduces the
+round-5 corpus exactly, so the 284 documents v0.1 admitted are gone and no other
+document changed. The tokenizer work between v1 and v3 does not flip a single document
+at the 0.6 cut: the tokens it removes (timestamp shards, CSS measurements, digit-first
+fragments) were either non-alphabetic or too rare to move any document's ratio across
+the line. The 7,080-token drop against v1 is therefore pure tokenizer effect on the
+same 17,390 documents, and the −44,665 against v2 is that plus the 284 dropped
+documents.
+
+Both re-runs are byte-identical: a second ingest produced the same corpus file, and two
+pipeline runs on it produced identical `ranking.json`, `ranking.csv` and `manifest.json`
+(verified with `cmp`). The candidate extraction also reproduced byte-identically.
+
+## Coverage of the eight target terms
+
+| term | v0 rank | v0.1 rank | v0.2 rank | tf | df |
+| --- | --- | --- | --- | --- | --- |
+| `fallback` | 188 | 199 | **185** | 1,192 | 688 |
+| `reproduce` | 748 | 832 | 716 | 1,660 | 1,309 |
+| `persist` | 1,208 | 1,363 | 1,176 | 480 | 327 |
+| `invalidate` | 1,362 | 1,522 | 1,329 | 106 | 80 |
+| `invoke` | 1,560 | 1,731 | 1,527 | 175 | 149 |
+| `propagate` | 1,868 | 2,056 | 1,835 | 67 | 55 |
+| `retrieve` | 3,408 | 3,652 | 3,375 | 58 | 48 |
+| `underlying` | 4,312 | 4,560 | 4,279 | 76 | 71 |
+
+Every tf/df is identical to v0, because the corpus is the same document set and these
+terms are untouched by the tokenizer. All ranks improve by 3–116 places, and the whole
+gain comes from the vocabulary shrinking from 6,215 to 6,182 rows: the 33 types the
+tokenizer removes are 33 fewer competitors, not 33 fewer occurrences. `fallback` is
+still the only target inside the 500. Target-adjacent rows move the same way: `retry`
+105 → 110 → 104, `credential` 315 → 341 → 302, `endpoint` 435 → 467 → 407, `encode`
+789 → 885 → 757.
+
+## Composition audit
+
+### Counts
+
+| bucket | v0 | v0.1 | v0.2 |
+| --- | --- | --- | --- |
+| (a) transferable SE vocabulary | 94 (18.8%) | 85 (17.0%) | 103 (20.6%) |
+| (b) technical nouns / product / tool / project names | 228 (45.6%) | 217 (43.4%) | 241 (48.2%) |
+| (c) abbreviations and acronyms | 86 (17.2%) | 80 (16.0%) | 93 (18.6%) |
+| (d) fragments and artifacts | 82 (16.4%) | 110 (22.0%) | 53 (10.6%) |
+| (e) other / unclear | 10 (2.0%) | 8 (1.6%) | 10 (2.0%) |
+
+v0.2 shares 469 terms with v0 and 434 with v0.1. Against v0: 31 rows left, 31 entered,
+and the 31 that left are **exactly** the tokenizer fragment class — 25 ISO timestamp
+shards, 5 CSS measurements and `7a7e3f9f`. Against v0.1: 66 replaced — 63 non-English
+(d) rows, `dtos` (c), `fastify` and `unittest` (b); 36 rows that v0.1 had pushed out
+return from v0, and 30 terms enter the candidate for the first time (`parse`, `append`,
+`supersede`, `rollback`, `macos`, `gradle`, `prs`, `regex`, `mqtt`, `sasl`, …). No
+shared term changed bucket.
+
+The (b) share rises to 48.2%, above both earlier versions, and that is expected: the
+slots freed by 57 fragment rows are filled by ordinary technical nouns, not by
+transferable vocabulary. (a) also rises to 20.6%, but the candidate is still closer to
+an ecosystem directory than to a vocabulary list.
+
+### (d) fragments and artifacts — full list (53 terms)
+
+Identifier, codename and version shards, 31 rows: `v0` (28), `if1` (40), `qwen3` (48),
+`herdr` (51), `x402` (52), `nemoclaw` (54), `brihas` (62), `if0` (64), `sarathy` (87),
+`stardelt` (94), `krikri` (107), `xhigh` (118), `if2` (139), `fc5q` (142), `39xc` (144),
+`vjpf` (146), `crtl` (164), `77bits` (174), `ac5` (207), `1080p` (239), `if3` (269),
+`romn` (281), `go1` (292), `ac7` (307), `v006` (317), `ac6` (327), `ac2` (344),
+`ac4` (347), `500s` (359), `ventura8` (368), `arfan11` (389). This is the residue the
+digit rules deliberately keep (letter-first tokens and codenames with no digit after
+the letter part), unchanged in kind from v0.1.
+
+Non-English strings, 18 rows: `अञ` (211), `गन` (212), `सङ` (226), `aucune` (233),
+`aucun` (234), `गह` (249), `fichier` (261), `fichiers` (262), `relecture` (297),
+`हळ` (299), `aceptación` (308), `criterios` (329), `critères` (411), `中文说明` (415),
+`compilatore` (435), `proporre` (437), `sottoponi` (438), `branche` (493).
+
+Artifacts, 4 rows: `alway` (252, the damaged lemma of `always`, 798 occurrences),
+`404s` (434), `python3` (451), `µs` (482).
+
+The non-English count is **18, back to v0's level**, but the honest accounting needs one
+correction to the round-8 brief. v0 did not have 14 non-English rows in its top 500; it
+had **17** — the 14 that also survived into v0.1 (`aucun`, `aucune`, `fichier`,
+`fichiers`, `critères`, `criterios`, `aceptación`, `relecture`, `अञ`, `गन`, `सङ`, `गह`,
+`हळ`, `中文说明`), plus `compilatore`, `proporre` and `sottoponi`, which fell just below
+v0.1's deeper cut and are back now that the ranking is 292 rows smaller. v0.2's 18 are
+the 15 non-English rows v0.1 retains (those 14 plus `branche`, v0.1 #436 and v0 #524)
+and those three returning Italian rows. **Nothing new leaked in**: the fifteen are a
+subset of v0.1's 78. So the right comparison is 17 → 78 → 18.
+
+Two further facts matter more than the count. First, **no non-English row is above
+#211** in v0.2; in v0.1 the highest was `écran` at #69 and eight sat above #200
+(`écran` 69, `échec` 92, `usuario` 115, `décision` 128, `contenu` 157, `servidor` 158,
+`revisión` 172, `preuve` 191). Second, the residue is no longer a separate
+foreign-document block: the 284 documents are gone, so the remaining rows come from
+mixed-language documents that are mostly English and still clear 0.6 (`compilatore` and
+`proporre` have df 10, exactly the cut). A frequency floor cannot separate those;
+script or stopword evidence is needed, as Part 2 said.
+
+### `alway` / `spe` / `unbound`
+
+The three known stem defects are unchanged in kind and now sit slightly higher because
+the ranking is smaller: `alway` #252 (v0 #258, v0.1 #279; tf 798, df 668), `spe` #667
+(v0 #699; tf 258, df 127), `unbound` #943 (v0 #975; tf 160, df 114). `alway` is the only
+one of the three inside the 500. The decoupling does not touch the lemmatizer, so this
+is the expected result; the guard against bare stems is still absent.
+
+## Verdict against the Phase 2 exit condition
+
+The Phase 2 exit condition is unchanged, and v0.2 still does not meet it.
+
+**Met, better than v0 and v0.1:**
+
+- the corpus, ranking and candidate are reproducible byte-identically, and v3's corpus
+  is byte-identical to v1's — the decoupling has no hidden side effects;
+- the language leak is fixed at its measured cause: 78 → 18 non-English rows, none
+  above #211, and the 284 floor-admitted documents are gone;
+- the tokenizer fix now shows its true effect, measured on a corpus that does not carry
+  the language regression: 31 fragment rows removed and nothing else changed;
+- the fragment share falls from 22.0% to 10.6%, below v0's 16.4%.
+
+**Not met:**
+
+- 10.6% is still a release blocker: 31 codename/identifier shards, 18 non-English
+  strings and 4 artifacts remain in 500 rows;
+- coverage of the target terms is still 1 of 8, though every target now ranks above its
+  v0 position;
+- (b) is 48.2% — the candidate is still an ecosystem directory with vocabulary mixed in;
+- the audit is a single LLM annotation, and the corpus is one day of issue/PR prose.
+
+Conclusion: the floors are correctly decoupled and this is the corpus the next round
+should build on. The remaining defects are not frequency-threshold defects. The next
+work is the one Part 2 named: script/stopword evidence in the language test for
+mixed-language documents, and a bare-stem guard in the lemmatizer. Keep v0, v0.1 and
+v0.2 in `data/` as measurements.

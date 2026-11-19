@@ -71,7 +71,7 @@ The implementation and the same formula live in the docstring of `src/vocabops/s
 
 Candidates for `-ed` / `-ing` tokens: the bare stem, the stem with a restored final `e`, and the doubled-consonant-undone form of both (`merged` → `merg`, `merge`; `running` → `runn`, `runne`, `run`, `rune`). Candidates for `-s` forms: the plain `-s` strip, `-ies` → `-y`, `-sses` / `-shes` / `-ches` / `-xes` / `-zes` / `-ses` minus `-es`, plus the stem and `stem + "e"` variants where they apply (`caches` → `cach`, `cache`; `aliases` → `aliase`, `alias`).
 
-A derived candidate counts as real when `word_frequency(candidate, "en") >= 3e-07` (the shared `ENGLISH_WORD_MIN_FREQUENCY`; it was `1e-06` before the day-corpus floor change documented below); among accepted candidates the most frequent wins. At `3e-07` the plurals and inflections of `fallback` and `encode` merge into their lemmas (`fallbacks` → `fallback`, `encoded` / `encoding` → `encode`). The same floor also has three known bad outcomes: `always` → `alway`, `speed` → `spe` and `unbounded` → `unbound`, because wordfreq lists those bare stems just above the floor. Those are documented defects, not goals; the suffix rules have no guard against them. The same `ENGLISH_WORD_MIN_FREQUENCY` constant is used by the ingest English-ratio filter, so the two thresholds cannot drift apart. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
+A derived candidate counts as real when `word_frequency(candidate, "en") >= 3e-07` (the lemmatizer's own `LEMMA_MIN_FREQUENCY`; it was `1e-06` before the day-corpus floor change documented below); among accepted candidates the most frequent wins. At `3e-07` the plurals and inflections of `fallback` and `encode` merge into their lemmas (`fallbacks` → `fallback`, `encoded` / `encoding` → `encode`). The same floor also has three known bad outcomes: `always` → `alway`, `speed` → `spe` and `unbounded` → `unbound`, because wordfreq lists those bare stems just above the floor. Those are documented defects, not goals; the suffix rules have no guard against them. The ingest English-ratio filter does **not** use this constant: it has its own `ENGLISH_RATIO_MIN_FREQUENCY = 1e-06`, because the two roles ask different questions (see [decoupled floors](#decoupled-floors-and-the-v3-day-corpus)). Sharing one value between them caused the round-8 language regression. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
 
 | token | candidates | result |
 | --- | --- | --- |
@@ -208,7 +208,7 @@ Most terms keep their frequency and move up only because the vocabulary is small
 Three opt-in ingest flags remove automation, non-English prose and exact duplicate text before anything reaches the pipeline. All are off by default, so the plain command still writes every text-bearing event.
 
 - `--exclude-bots` — drop the event when the actor login ends with `[bot]`, or when it is in the explicit `BOT_LOGINS` set. That set currently holds only `Copilot`, GitHub's Copilot bot account, which carries no suffix. A login that merely contains `bot` (`botanist`, `robotfan`) is a human account and is kept.
-- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total`. A token is known only when `word_frequency(token, "en") >= 3e-07`, the shared `ENGLISH_WORD_MIN_FREQUENCY` constant defined in `src/vocabops/normalize.py` and imported here (it was `1e-06` when the runs in this section were made); the lemmatizer's candidate check uses the same constant, so the two thresholds cannot drift apart. Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
+- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total`. A token is known only when `word_frequency(token, "en") >= 1e-06`, the ingest's own `ENGLISH_RATIO_MIN_FREQUENCY` constant defined in `src/vocabops/ingest.py`. It is deliberately **not** the lemmatizer's `LEMMA_MIN_FREQUENCY` (3e-07): the lemmatizer asks whether a candidate is a plausible headword, while this test asks whether a token is evidence that the document is English, and round 8 measured that `3e-07` is too loose for the second question (284 French/Spanish documents passed). Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
 - `--dedup-text` — after the other filters, drop a document whose stripped full text is byte-identical to a document already kept in the run. Comparison is `sha256` of `text.strip()` and the first occurrence in file order wins. Off by default. This is exact duplication only: near-duplicates, and templated documents that share a long prefix but differ in the tail, are not detected.
 
 Both filters run at fixed positions: event-type/body extraction, then bot filter, then language filter, then event-ID checks, then optional exact-text deduplication, then `--max-docs`. Every dropped event lands in exactly one counter, and `ingest()` returns them all: `input_files`, `events_seen`, `documents_written`, `skipped_no_body`, `skipped_bot`, `skipped_language`, `skipped_no_tokens`, `skipped_duplicate_text`, `duplicates`, `malformed`, `missing_id`. Neither flag touches normalization, the lemmatizer, `se_specificity`, or the ranking; exclusion happens only here.
@@ -317,12 +317,12 @@ The language filter reliably removes CJK text: the old `また` and `初筛` row
 
 ### Clean run: shared English floor and exact-text dedup
 
-This section records the 1-hour clean run made while the shared floor was `1e-06`. The
-constant is now `3e-07` (see [the floor change](#frequency-floor-analysis) below), so
-re-running this ingest today would keep more documents; the counters and tables here
-are kept exactly as measured then.
+This section records the 1-hour clean run made while the English-ratio floor was
+`1e-06`. That value is again the ratio floor today (`ENGLISH_RATIO_MIN_FREQUENCY`), so
+the counters below still describe what the current filter does on this input; only the
+tokenizer and the constant's name changed. The tables are kept exactly as measured then.
 
-The token test then used the same "real English word" floor as the lemmatizer. `src/vocabops/normalize.py` defined `ENGLISH_WORD_MIN_FREQUENCY = 1e-06`; its lemmatizer checked against that constant and `src/vocabops/ingest.py` imports the same object, so the two thresholds cannot drift apart silently. A token counted as English only when `word_frequency(token, "en") >= 1e-06`.
+The token test then used the same "real English word" floor as the lemmatizer. `src/vocabops/normalize.py` defined `ENGLISH_WORD_MIN_FREQUENCY = 1e-06`; its lemmatizer checked against that constant and `src/vocabops/ingest.py` imported the same object, so the two thresholds could not drift apart. That rationale was **wrong** and is reversed in round 9: sharing forced one value to answer two questions, and when the lemmatizer legitimately moved to `3e-07` the language test silently became too loose. The two constants are now separate; see [decoupled floors](#decoupled-floors-and-the-v3-day-corpus). A token counted as English only when `word_frequency(token, "en") >= 1e-06`.
 
 The floor is two orders of magnitude above wordfreq's noise floor for non-words (`merg` 1.6e-08, `requir` 3.3e-08) and above the trace frequencies at which wordfreq lists Spanish and Portuguese words (`código` 1.7e-08, `repositório` 0.0). That trace presence was exactly what defeated the old `> 0` rule and put `código` at rank 8 of the filtered ranking. The floor stays at or below the technical lemmas the corpus needs (`invalidate` is exactly 1e-06, `invoke` 2.14e-06, `cache` 4.27e-06), but it is still a general-English judgement: `invalidation` (1.7e-07) and `fallback` (4.57e-07) fall below it, so an otherwise English document containing them scores slightly under 1.0 and still clears the 0.6 document cut comfortably.
 
@@ -592,11 +592,15 @@ What happened to the two named terms once the floor was lowered:
 - `encoded` (tf 84, df 69), plus `encodes` (37 / 30) and 119 of the 130 `encoding` occurrences — all merge into `encode` at `3e-07`. `encode` goes from tf 61 / df 46 (rank #1,727 at `min_df = 10`) to tf 301 / df 195 and rank #789 (the estimate was ~#827). The remaining 11 `encoding` occurrences come from `encodings`, which already maps to `encoding` at both floors; `encoding` survives as a low-ranked row (#4,355, tf 11, df 11).
 - `invalidation` is unaffected: it is a derivational form the suffix rules never propose, so no floor change merges it into `invalidate`.
 
-### Applied: the floor is now `3e-07`
+### Applied: the lemmatizer floor is `3e-07`
 
-The constant in `src/vocabops/normalize.py` is now `ENGLISH_WORD_MIN_FREQUENCY = 3e-07`
-and the ingest English-ratio filter imports it unchanged, so both moved together. On
-the fixed day corpus the chain of effects is:
+The constant in `src/vocabops/normalize.py` is now `LEMMA_MIN_FREQUENCY = 3e-07` (it was
+`ENGLISH_WORD_MIN_FREQUENCY` until round 9 renamed it). The ingest English-ratio filter
+no longer imports it: `src/vocabops/ingest.py` defines its own
+`ENGLISH_RATIO_MIN_FREQUENCY = 1e-06`. The two thresholds moved apart in round 9 after
+the round-8 regression, when the shared value let 284 French/Spanish documents into the
+day corpus; see [decoupled floors](#decoupled-floors-and-the-v3-day-corpus). On
+the fixed day corpus the chain of effects of the lemmatizer floor alone is:
 
 | measure | `1e-06` | `3e-07` |
 | --- | --- | --- |
@@ -612,16 +616,23 @@ exist as separate rows. The three known bad outcomes land as follows at `min_df 
 df 114). The stem `speed` also survives as its own small row (#6,171, tf 15, df 14) from
 the plural `speeds`, which now lemmatizes to `speed` rather than to `spe`.
 
-The ingest side effect is real and was not used to rebuild this corpus: re-running the
-day ingest at `3e-07` (same flags, no `--dedup-text`) keeps 294 more documents — the
-language-filter drop falls from 3,954 to 3,660 and 18,575 documents are written before
-text dedup. The 17,390-document corpus used for every ranking here was built at
-`1e-06`, so the tf/df differences above come from lemmatization alone.
+The ingest side effect was real and was not used to rebuild the v0/v0.1 corpora: re-running the
+day ingest at `3e-07` (same flags, no `--dedup-text`) kept 294 more documents — the
+language-filter drop fell from 3,954 to 3,660 and 18,575 documents were written before
+text dedup. The 17,390-document corpus used for every v0/v0.1 ranking here was built at
+`1e-06`, so those tf/df differences come from lemmatization alone. Round 9 reverses that
+side effect: with the ratio floor back at `1e-06`, the v3 day corpus is byte-identical
+to the v1 corpus (same sha256), and v0.2 is ranked from it.
 
-Tests: one pre-existing assertion pinned the constant (`test_english_floor_is_shared_with_the_lemmatizer`,
-`1e-06` → `3e-07`). New tests pin the four required merges (`fallbacks`, `encoded`,
-`credentials`, `retries`) and the three known defects, so a later change cannot silently
-"fix" or worsen them without a test failure.
+Tests: the old assertion that pinned the constant (`test_english_floor_is_shared_with_the_lemmatizer`)
+was replaced in round 9 by tests that pin each floor separately and assert they differ
+(`test_english_ratio_floor_is_pinned_to_ingest`,
+`test_english_ratio_floor_is_not_the_lemmatizer_floor`,
+`test_lemmatize_floor_is_pinned_and_distinct_from_the_ratio_floor`), plus a Spanish
+fixture that passed the 0.6 cut at `3e-07` and must drop at `1e-06`. The tests for the
+four required merges (`fallbacks`, `encoded`, `credentials`, `retries`) and the three
+known defects still hold unchanged, so a later change cannot silently "fix" or worsen
+them without a test failure.
 
 ## Tokenizer rules and the re-ingested day corpus (v2)
 
@@ -645,7 +656,8 @@ and `x64` (#135) all keep their rows. The rules are pinned by
 `test_tokenize_strips_standalone_iso_dates_but_keeps_years`,
 `test_tokenize_drops_css_measurement_tokens`,
 `test_tokenize_drops_digit_first_shards_only` and
-`test_tokenize_keeps_vocabulary_and_drops_timestamp_css_shards`; the suite is 88 tests.
+`test_tokenize_keeps_vocabulary_and_drops_timestamp_css_shards`; the suite is 91 tests
+after round 9's floor tests.
 
 The day corpus was then re-ingested with the same flags at the `3e-07` floor:
 
@@ -697,14 +709,56 @@ floor counts many of wordfreq's trace-level French and Spanish entries as Englis
 add 64 new non-English rows, including `aucun` at #40 (from #239). The tokenizer fix
 removed everything it targeted; the language filter is now the dominant defect.
 
+## Decoupled floors and the v3 day corpus
+
+The lemmatizer floor and the English-ratio floor were one constant until this round. They
+answer different questions — *is this candidate a plausible headword?* versus *is this
+token evidence that the document is English?* — and round 8's 284 extra French/Spanish
+documents were the cost of sharing. The constants are now separate:
+
+| constant | module | value | role |
+| --- | --- | --- | --- |
+| `LEMMA_MIN_FREQUENCY` | `src/vocabops/normalize.py` | `3e-07` | accepts candidate lemmas |
+| `ENGLISH_RATIO_MIN_FREQUENCY` | `src/vocabops/ingest.py` | `1e-06` | counts a token as document-level English evidence |
+
+`3e-07` keeps the round-6/7 lemmatizer evidence (`fallback` 4.57e-07 and `encode`
+8.91e-07 must validate; the three known stem defects stay as documented). `1e-06` is
+the value at which round 5 measured the language test working: all Spanish and
+Portuguese documents dropped from the 1-hour corpus.
+
+The day ingest was re-run at those values (`documents-day-v3.jsonl`):
+
+| counter | v1 (`1e-06`, old tokenizer) | v2 (`3e-07`) | v3 (`1e-06`) |
+| --- | --- | --- | --- |
+| documents written | 17,390 | 17,674 | 17,390 |
+| skipped: below english ratio | 3,954 | 3,660 | 3,954 |
+| skipped: duplicate text | 891 | 901 | 891 |
+| normalized tokens | 2,188,397 | 2,225,982 | 2,181,317 |
+| corpus sha256 | `74027bb1…` | `99819532…` | `74027bb1…` |
+
+**v3 is byte-identical to v1.** Restoring `1e-06` reproduces the round-5 corpus exactly;
+the 284 documents are gone, no other document changed, and no document moves across the
+0.6 cut because of the tokenizer (the tokens it removes were never ratio evidence for a
+document that sat near the boundary). The 7,080-token drop against v1 is the tokenizer
+on the same 17,390 documents; the 44,665-token drop against v2 adds the 284 dropped
+documents. Two ingests, two pipeline runs and two candidate extractions all reproduced
+byte-identically; the `min_df = 10` ranking has 6,182 rows (v1 6,215, v2 6,474).
+
+The re-ranked candidate is `data/core500-v0.2.jsonl` (snapshot
+`gharchive-2026-11-18-day-v3`, cut score 5.919). The fragment bucket falls from v0.1's
+110 rows (22.0%) to 53 (10.6%), non-English rows from 78 to 18 with none above #211, and
+every target term ranks 14–281 places better than in v0.1 (3–33 better than in v0) because
+the competing vocabulary is 292 rows smaller. The full comparison is in
+[Core 500 candidate — evaluation, Part 3](core500-evaluation.md#part-3--v02).
+
 ## Known limitations
 
-- **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files; 17,390 documents in v1, 17,674 in v2) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-dominant slice of the ecosystem — the language filter leaks Latin-script non-English, as the v2 ranking shows.
+- **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files; 17,390 documents in v1 and v3, 17,674 in v2) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-dominant slice of the ecosystem — the language filter still leaks a small Latin-script and Devanagari residue, as the v0.2 ranking shows.
 - **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, filtered by `wordfreq` at `3e-07`. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it still keeps its inflections as separate rows, and a stem that wordfreq happens to list just above it can win — that is how `always` becomes `alway`, `speed` becomes `spe` and `unbounded` becomes `unbound`. A real word can also win over another real word (`rune` is a candidate for `running` but loses to the much more frequent `run`). When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
-- **Tokenization still keeps some digit-bearing fragments.** The three digit rules remove ISO timestamps, CSS measurements and digit-first shards, which deleted 31 fragment rows from the v0 ranking, but letter-first tokens are kept by design (`sha256`, `arm64`, `e2e`) and that also keeps `v0`, `1080p`, `500s` and `v006`. One time shard also survives (`00z`, from `2026-11-18 ~10:00Z` forms). In the v0.1 top 500 these are 21 of the 110 fragment rows (plus 11 codename fragments with no digits); the other 78 are non-English strings, which the tokenizer cannot fix.
+- **Tokenization still keeps some digit-bearing fragments.** The three digit rules remove ISO timestamps, CSS measurements and digit-first shards, which deleted 31 fragment rows from the v0 ranking, but letter-first tokens are kept by design (`sha256`, `arm64`, `e2e`) and that also keeps `v0`, `1080p`, `500s` and `v006`. One time shard also survives (`00z`, #1,776, from `2026-11-18 ~10:00Z` forms). In the v0.2 top 500, 35 of the 53 fragment rows are the classes these rules deliberately keep (31 identifier/codename/version shards and 4 other artifacts); the other 18 are non-English strings, which the tokenizer cannot fix.
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
 - **Thin smoothing.** With a corpus this small, `alpha = 1` and `vocab_size` in the denominator dominate absolute scores; only the ordering is meaningful. One-off rare words can outrank repeated target terms.
-- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the shared `3e-07` English-token floor, and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms — in v0.1 they are 78 of the top 500 (15.6%), because `3e-07` counts wordfreq's trace-level French and Spanish entries as English.
+- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the `1e-06` English-token ratio floor (`ENGLISH_RATIO_MIN_FREQUENCY`), and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms — in v0.2 they are 18 of the top 500 (3.6%), because a 1e-06 frequency floor cannot separate a mostly-English document that quotes a French or Italian sentence.
 
 Reproducibility rules for runs of this pipeline are in [Pipeline conventions](pipeline-conventions.md).
