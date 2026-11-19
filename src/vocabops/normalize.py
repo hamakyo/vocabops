@@ -9,8 +9,8 @@ that every step is inspectable and reproducible:
 4. drop URLs
 5. lowercase
 6. tokenize on word characters
-7. lemmatize with an irregular map, suffix-rule candidates and a wordfreq
-   dictionary check
+7. lemmatize with an irregular map, suffix-rule candidates, a wordfreq
+   dictionary check and a frequency-ratio guard against bare stems
 8. remove English stopwords
 
 The lemmatizer is dictionary-validated rather than a full morphological
@@ -22,6 +22,8 @@ accepted only when ``wordfreq`` knows it as an English word. See
 from __future__ import annotations
 
 import re
+from collections import Counter
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
 from wordfreq import word_frequency
@@ -29,10 +31,14 @@ from wordfreq import word_frequency
 __all__ = [
     "STOPWORDS",
     "IRREGULAR_LEMMAS",
-    "ENGLISH_WORD_MIN_FREQUENCY",
+    "LEMMA_MIN_FREQUENCY",
+    "MIN_CANDIDATE_FREQUENCY_RATIO",
+    "ATTESTATION_MIN_DOCUMENTS",
     "clean_text",
     "tokenize",
+    "attested_headwords",
     "lemmatize",
+    "normalize_tokens",
     "normalize",
 ]
 
@@ -42,6 +48,46 @@ _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _HTML_TAG_RE = re.compile(r"<[^>\n]+>")
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+# --- digit-bearing token rules -------------------------------------------
+#
+# The Core 500 v0 audit found 82 fragments in the top 500
+# (``data/core500-v0-audit.jsonl`` bucket ``d``; see
+# ``docs/core500-evaluation.md``). The single biggest cause was the bare
+# ``\w+`` tokenizer: an ISO timestamp such as ``2026-11-18T02:07:00Z`` became
+# ``18t02`` / ``07`` / ``00z`` and those shards entered the ranking as if they
+# were vocabulary (25 rows in the top 500). CSS measurements (``390px``,
+# ``320px``, ``1280px``), version shards (``v006``) and hex-like strings
+# (``7a7e3f9f``) add the rest. The three rules below remove that class while
+# keeping real letter-first technical terms (``sha256``, ``arm64``, ``aarch64``,
+# ``e2e``, ``i18n``, ``utf8``, ``x402``, ``python3``, ``1080p``).
+#
+# They live in ``tokenize`` rather than in ``clean_text`` on purpose: both the
+# pipeline (via ``normalize``) and the ingest English-ratio filter call
+# ``tokenize`` directly, so the two paths see identical tokens.
+
+# Rule 1: strip ISO-8601 timestamps before tokenizing. The full datetime form
+# must run before the bare-date form, otherwise the date half is removed and
+# the time half (``t02``, ``07``, ``00z``) is left behind. A bare year such as
+# "in 2026" or "version 2.0" is not an ISO date and is unaffected.
+_ISO_DATETIME_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+    r"(?::\d{2}(?:\.\d+)?)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?\b",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+# Rule 2: CSS/measurement values are not vocabulary (``390px``, ``12pt``).
+_MEASUREMENT_RE = re.compile(r"^\d+(?:px|pt|rem|em)$")
+
+# Rule 3: digit-first shards. A token that starts with a digit and has another
+# digit after at least one letter is a tokenizer artifact of a timestamp,
+# identifier or hex string (``18t02``, ``7a7e3f9f``). Letter-first tokens are
+# never dropped here, so ``sha256``, ``arm64`` and ``e2e`` survive. Digit-first
+# tokens with no digit after the letter part (``1080p``, ``500s``, and also
+# letter-first version shards such as ``v006``) are a documented residual.
+_DIGIT_FIRST_SHARD_RE = re.compile(r"^\d.*[A-Za-z].*\d")
 
 # Words whose lemma cannot be derived with suffix rules.
 IRREGULAR_LEMMAS: dict[str, str] = {
@@ -113,16 +159,115 @@ STOPWORDS: frozenset[str] = frozenset(
 
 _VOWELS = frozenset("aeiou")
 
-# The shared "real English word" floor: a token or generated lemma counts as
-# English only when its wordfreq English frequency is at or above this value.
-# Both the lemmatizer below and the English-ratio filter in ``ingest.py`` use
-# this one constant, so the two thresholds cannot drift apart.
+# The lemmatizer's "is this candidate a plausible English headword?" floor: a
+# generated lemma counts as real only when its wordfreq English frequency is at
+# or above this value.
 #
-# The value sits well above wordfreq's noise floor for non-words (e.g. "merg"
-# 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08, "código" 1.7e-08) and at or below
-# every technical lemma this corpus needs (e.g. "propagate" and "invalidate" at
-# 1e-06, "invoke" 2.1e-06).
-ENGLISH_WORD_MIN_FREQUENCY = 1e-06
+# This is *not* the same question as the ingest English-ratio test ("is this
+# token evidence that the document is English?"), which has its own constant,
+# ``vocabops.ingest.ENGLISH_RATIO_MIN_FREQUENCY``. Sharing one value between
+# the two questions caused the round-8 regression: at 3e-07 the document test
+# accepted French and Spanish words and 284 extra FR/ES documents entered the
+# day corpus, taking non-English rows in the top 500 from 14 to 78.
+#
+# The value sits an order of magnitude above wordfreq's noise floor for
+# non-words (e.g. "merg" 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08, "código"
+# 1.7e-08) and at or below the technical lemmas this corpus needs, including
+# ones the old 1e-06 floor wrongly excluded ("fallback" 4.57e-07, "retry"
+# 3.72e-07, "credential" 5.62e-07, "endpoint" 8.51e-07, "encode" 8.91e-07).
+# Measured against the 24-hour GH Archive day corpus, the old floor turned 925
+# of 66,045 distinct raw tokens (1.4% of types, 0.3% of occurrences) into the
+# wrong lemma. Lowering it fixed 22 of the 25 highest-frequency cases but also
+# ``3e-07`` admits a few candidates that wordfreq happens to list just above
+# 3e-07: "always" -> "alway" (3.89e-07), "speed" -> "spe" (5.75e-07) and
+# "unbounded" -> "unbound" (7.08e-07). The first two are stem fragments and are
+# rejected by the ratio guard below; "unbounded" -> "unbound" is two real words
+# and stays a documented non-goal (see ``MIN_CANDIDATE_FREQUENCY_RATIO``).
+LEMMA_MIN_FREQUENCY = 3e-07
+
+# How much rarer than the token a candidate may be before it is rejected as a
+# bare stem.
+#
+# A suffix rule that strips an ending can land on a fragment that wordfreq
+# still lists: "always" -> "alway" (obsolete word, 3.89e-07), "speed" -> "spe"
+# (5.75e-07), "ceiling" -> "ceil" (7.24e-08, a function name; reached through
+# corpus attestation after the suffix rule proposes it). Frequency alone cannot
+# separate those from real lemmas, but the *ratio* between candidate and token
+# can: a real merge keeps a substantial share of the inflected form's
+# frequency, while a fragment keeps almost none.
+#
+# Calibration on wordfreq English frequencies, measured for this corpus:
+#
+#   good merges    credentials -> credential  0.102  (the minimum)
+#                  embedded    -> embed        0.112
+#                  detached    -> detach       0.158
+#                  encrypted   -> encrypt       0.219
+#                  all other observed good merges >= 0.32
+#   bad merges     always      -> alway        0.0007
+#                  speed       -> spe          0.006
+#                  ceiling     -> ceil         0.005
+#
+# ``0.02`` sits roughly 3x above the worst bad case and 5x below the weakest
+# good case, so it is a gap cut, not a tuned one. A token with wordfreq 0
+# bypasses the ratio test: the zero-frequency dedup family ("deduped" ->
+# "dedup", both 0.0) has no ratio to judge, and attestation governs there.
+#
+# Exemption: the ratio test is skipped when the candidate's wordfreq is exactly
+# 0.0 *and* the candidate is corpus-attested. That class is the technical
+# headword the attestation mechanism exists for: "webhook", "untrack",
+# "unassign", "paginate", "precompute" and "prefill" are wordfreq 0.0, so their
+# ratio is 0 and an unconditional guard rejected every one. The Part 6 audit
+# measured the cost: 23 real merges (393 occurrences) were collateral, 20 of
+# them into zero-frequency attested candidates. Zero frequency is the only case
+# exempted, because such a candidate can only have been accepted through
+# attestation (it fails the 3e-07 floor), and attestation already requires the
+# form standalone in >= 3 documents. Every intended block sits above 0.0 and
+# stays guarded: "alway" 3.89e-07, "spe" 5.75e-07, "ceil" 7.24e-08, "serie"
+# 2.14e-06, "morn" 1.12e-06, "physic" 3.16e-07.
+#
+# Otherwise the guard applies to every candidate acceptance, including attested
+# ones: corpus attestation must not override it, because ``ceil`` is attested as
+# a function name for the same reason it is a bad lemma for ``ceiling``.
+#
+# Known non-goal: "unbounded" -> "unbound" has ratio 2.04 because both are real
+# words; the guard cannot and should not block it.
+MIN_CANDIDATE_FREQUENCY_RATIO = 0.02
+
+# How many documents must contain a raw form before the corpus itself counts as
+# evidence that the form is a real headword of this domain.
+#
+# The wordfreq floor is a general-English judgement and it fails technical
+# headwords that the corpus uses all the time: ``rebase`` is wordfreq 6.46e-08,
+# ``dedup`` and ``dedupe`` are 0.0. Their inflections therefore never validate,
+# even though the headword is a ranking row attested across the corpus (the Core
+# 500 review found ``rebase``/``rebased``/``rebases`` as three rows for one
+# lemma). Three documents is the smallest count that is still corpus evidence
+# rather than one author's repetition: the day corpus is 17,390 documents, so a
+# form in three of them is a shared term, not a typo or a template artefact.
+# Attestation only admits a candidate the suffix rules already propose, so it
+# cannot invent a lemma; it can only let an existing candidate win where no
+# wordfreq-valid candidate exists.
+ATTESTATION_MIN_DOCUMENTS = 3
+
+
+def attested_headwords(
+    token_documents: Iterable[Sequence[str]],
+    min_documents: int = ATTESTATION_MIN_DOCUMENTS,
+) -> frozenset[str]:
+    """Raw forms that occur standalone in at least ``min_documents`` documents.
+
+    ``token_documents`` holds the raw tokens of each document (the output of
+    :func:`tokenize`, before lemmatization). A form counts once per document, so
+    repetition inside one document cannot attest itself. The result is a set, so
+    document order and iteration order cannot change it: the same corpus yields
+    the same attested set and therefore byte-identical output.
+    """
+    document_counts: Counter[str] = Counter()
+    for tokens in token_documents:
+        document_counts.update(set(tokens))
+    return frozenset(
+        form for form, count in document_counts.items() if count >= min_documents
+    )
 
 
 def clean_text(text: str) -> str:
@@ -142,8 +287,17 @@ def tokenize(text: str) -> list[str]:
     """Return lowercase word-character tokens.
 
     Punctuation, underscores and pure-number tokens are dropped; a token must
-    contain at least one letter.
+    contain at least one letter. Digit-bearing artifacts are removed by three
+    rules applied in order (see the module-level comment): ISO-8601 timestamps
+    are stripped from the text before tokenizing, CSS/measurement tokens are
+    dropped, and digit-first shards with a digit after their letter part are
+    dropped. Real letter-first technical terms keep their digit suffixes.
     """
+    # Rule 1: remove ISO datetimes, then bare ISO dates, before ``\w+`` can
+    # split them into timestamp shards.
+    text = _ISO_DATETIME_RE.sub(" ", text)
+    text = _ISO_DATE_RE.sub(" ", text)
+
     tokens = []
     for raw in _TOKEN_RE.findall(text):
         token = raw.strip("_").lower()
@@ -152,6 +306,13 @@ def tokenize(text: str) -> list[str]:
         if not any(ch.isalpha() for ch in token):
             continue
         if len(token) == 1 and token not in {"a", "i"}:
+            continue
+        # Rule 2: CSS/measurement values such as "390px" are not vocabulary.
+        if _MEASUREMENT_RE.match(token):
+            continue
+        # Rule 3: digit-first shards such as "18t02" or "7a7e3f9f". Letter-first
+        # tokens (sha256, arm64, e2e) never match this pattern.
+        if _DIGIT_FIRST_SHARD_RE.match(token):
             continue
         tokens.append(token)
     return tokens
@@ -221,16 +382,29 @@ def _derived_candidates(token: str) -> set[str]:
 
 
 @lru_cache(maxsize=None)
-def lemmatize(token: str) -> str:
-    """Reduce an inflected English word to a dictionary-validated lemma.
+def lemmatize(token: str, attested: frozenset[str] = frozenset()) -> str:
+    """Reduce an inflected English word to a validated lemma.
 
     Order of operations: irregular map, candidate generation from the suffix
-    rules, then validation against ``wordfreq``. A candidate is accepted only
-    when its English frequency is at least :data:`ENGLISH_WORD_MIN_FREQUENCY`
-    (the same "real English word" floor the ingest English-ratio filter uses);
-    among accepted candidates the most frequent wins. If no candidate survives,
+    rules, then validation. A candidate is accepted when its English frequency
+    is at least :data:`LEMMA_MIN_FREQUENCY`, or when the corpus attests it (it
+    occurs standalone in at least :data:`ATTESTATION_MIN_DOCUMENTS` documents,
+    passed in as ``attested``). Every accepted candidate must also pass the
+    bare-stem ratio guard: when the token itself has a nonzero wordfreq, the
+    candidate's frequency must be at least
+    :data:`MIN_CANDIDATE_FREQUENCY_RATIO` of it. The one exemption is a
+    candidate whose wordfreq is exactly 0.0 that the corpus attests: its ratio
+    is 0 by construction, so attestation is the evidence that governs it. Among
+    surviving candidates the most frequent wins, so a wordfreq-valid candidate
+    always beats an attested-only one with lower frequency; attestation only
+    decides when no wordfreq-valid candidate exists. If no candidate survives,
     the original token is returned, because a real inflected word is always a
     safer answer than an invented stem.
+
+    ``attested`` defaults to the empty set, which reproduces the pure
+    single-token behaviour for callers without a corpus: the corpus pre-pass is
+    opt-in and cannot change a result unless a candidate is both attested and
+    not wordfreq-valid.
 
     The original token is never compared against the candidates: an inflected
     form can be more frequent than its lemma (``required`` 1.05e-04 vs
@@ -246,25 +420,43 @@ def lemmatize(token: str) -> str:
         return token
 
     best: str | None = None
-    best_frequency = 0.0
+    best_frequency = -1.0
+    token_frequency = _frequency(token)
     for candidate in sorted(_derived_candidates(token)):
         frequency = _frequency(candidate)
-        if frequency >= ENGLISH_WORD_MIN_FREQUENCY and frequency > best_frequency:
-            best = candidate
-            best_frequency = frequency
+        if frequency >= LEMMA_MIN_FREQUENCY or candidate in attested:
+            # Bare-stem guard: a candidate far rarer than the token it came
+            # from is a fragment, not a lemma. Tokens at wordfreq 0 have no
+            # ratio to test; attestation decides for that family. The same is
+            # true of candidates at wordfreq 0 that the corpus attests: their
+            # ratio is 0 by definition, so the ratio test cannot judge them and
+            # attestation (>= 3 documents) is the evidence instead.
+            exempt = frequency == 0.0 and candidate in attested
+            if (
+                not exempt
+                and token_frequency > 0
+                and frequency / token_frequency < MIN_CANDIDATE_FREQUENCY_RATIO
+            ):
+                continue
+            if frequency > best_frequency:
+                best = candidate
+                best_frequency = frequency
     return best if best is not None else token
 
 
-def normalize(text: str, remove_stopwords: bool = True) -> list[str]:
-    """Full normalization pipeline for one document.
+def normalize_tokens(
+    tokens: Iterable[str],
+    remove_stopwords: bool = True,
+    attested: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Lemmatize raw tokens, optionally dropping stopwords.
 
-    Returns the ordered list of lemma tokens. Stopword removal checks both the
-    raw token and the lemma: the raw check catches stopwords such as
-    "anything"/"during" whose heuristic lemma would otherwise survive, and the
-    lemma check catches inflected forms such as "being" -> "be".
+    Split out from :func:`normalize` so the pipeline can tokenize once, build
+    the attested set from those raw tokens, and then lemmatize the same tokens
+    with corpus evidence.
     """
-    tokens = tokenize(clean_text(text))
-    lemmas = [lemmatize(token) for token in tokens]
+    tokens = list(tokens)
+    lemmas = [lemmatize(token, attested) for token in tokens]
     if remove_stopwords:
         lemmas = [
             lemma
@@ -272,3 +464,23 @@ def normalize(text: str, remove_stopwords: bool = True) -> list[str]:
             if token not in STOPWORDS and lemma not in STOPWORDS
         ]
     return lemmas
+
+
+def normalize(
+    text: str,
+    remove_stopwords: bool = True,
+    attested: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Full normalization pipeline for one document.
+
+    Returns the ordered list of lemma tokens. Stopword removal checks both the
+    raw token and the lemma: the raw check catches stopwords such as
+    "anything"/"during" whose heuristic lemma would otherwise survive, and the
+    lemma check catches inflected forms such as "being" -> "be".
+
+    ``attested`` carries corpus evidence from :func:`attested_headwords`; it
+    defaults to the empty set, so the pure single-document behaviour is
+    unchanged for callers that have no corpus.
+    """
+    tokens = tokenize(clean_text(text))
+    return normalize_tokens(tokens, remove_stopwords=remove_stopwords, attested=attested)

@@ -66,15 +66,17 @@ One command or workflow can reproduce a candidate vocabulary ranking from fixed 
 Goal: turn the corpus ranking into the first useful software-engineering vocabulary dataset.
 
 - [ ] evaluate candidate ranking methods
-- [ ] define minimum frequency/document-frequency thresholds
+- [x] define minimum frequency/document-frequency thresholds
 - [ ] detect and down-rank boilerplate and obvious low-value terms
-- [ ] review high-ranking technical nouns separately from transferable English vocabulary
+- [x] review high-ranking technical nouns separately from transferable English vocabulary — done via the two views and [Part 4](core500-evaluation.md#part-4--vocabulary-and-technical-views); the split is a review, not a rule.
 - [ ] curate Japanese glosses
 - [ ] attach CEFR where reliable
 - [ ] extract common collocations
 - [ ] add curated or safely generated examples
 - [ ] publish Core 500 as JSON and CSV
 - [ ] document methodology, source coverage, and known biases
+
+Thresholds are defined with evidence in [Core 500 candidate — evaluation](core500-evaluation.md): the shared lemma floor is `3e-07` (day-corpus measurement) and the ranking cut is `--min-df 10` (the `min_df = 3` top is junk-led at this corpus size). The other boxes remain open; `data/core500-v0.jsonl` is a candidate artifact, not a published dataset.
 
 Exit condition:
 
