@@ -22,7 +22,7 @@ A pipeline run must be reproducible byte-for-byte from the same inputs and the s
 - **Fixed snapshot IDs.** Every run names its corpus snapshot explicitly (`--snapshot-id`), never from the clock or the host. The ID is recorded in the manifest.
 - **Sorted output.** Input files are processed in sorted path order and ranking rows are sorted by score descending, then term ascending. No ranking depends on filesystem iteration order or on hash-map order.
 - **No timestamps in ranking rows.** Ranking files contain measurements only. If a manifest carries a `created_at` field, that is the only place a timestamp may appear. The Phase 1 prototype omits timestamps from all generated files so repeated runs are byte-identical; a release manifest may add `created_at` without affecting ranking data.
-- **Stable document IDs.** A document ID is `sha256(source_family + "/" + relative_path)` as a hex digest. It does not depend on content, so the same source document keeps the same ID across re-runs and the ID reveals no raw text.
+- **Stable document IDs.** A document ID is `sha256(source_family + "/" + relative_path)` as a hex digest. It does not depend on content, so the same source document keeps the same ID across re-runs and the ID reveals no raw text. A source adapter that has no file path uses the source's own stable identifier in place of the path: the GH Archive adapter hashes `gharchive/<event id>`.
 - **Pinned instrumentation.** `wordfreq` is pinned by a minimum version in `pyproject.toml`; a baseline change is a dataset change and must be recorded in the manifest or release notes.
 
 Determinism is verifiable: run the pipeline twice into two output directories and compare files. `tests/test_pipeline.py` does this for the prototype.
