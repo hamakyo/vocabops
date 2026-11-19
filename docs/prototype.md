@@ -71,7 +71,7 @@ The implementation and the same formula live in the docstring of `src/vocabops/s
 
 Candidates for `-ed` / `-ing` tokens: the bare stem, the stem with a restored final `e`, and the doubled-consonant-undone form of both (`merged` → `merg`, `merge`; `running` → `runn`, `runne`, `run`, `rune`). Candidates for `-s` forms: the plain `-s` strip, `-ies` → `-y`, `-sses` / `-shes` / `-ches` / `-xes` / `-zes` / `-ses` minus `-es`, plus the stem and `stem + "e"` variants where they apply (`caches` → `cach`, `cache`; `aliases` → `aliase`, `alias`).
 
-A derived candidate counts as real when `word_frequency(candidate, "en") >= 1e-06`; among accepted candidates the most frequent wins. The same `ENGLISH_WORD_MIN_FREQUENCY` constant is used by the ingest English-ratio filter, so the two thresholds cannot drift apart. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
+A derived candidate counts as real when `word_frequency(candidate, "en") >= 3e-07` (the shared `ENGLISH_WORD_MIN_FREQUENCY`; it was `1e-06` before the day-corpus floor change documented below); among accepted candidates the most frequent wins. At `3e-07` the plurals and inflections of `fallback` and `encode` merge into their lemmas (`fallbacks` → `fallback`, `encoded` / `encoding` → `encode`). The same floor also has three known bad outcomes: `always` → `alway`, `speed` → `spe` and `unbounded` → `unbound`, because wordfreq lists those bare stems just above the floor. Those are documented defects, not goals; the suffix rules have no guard against them. The same `ENGLISH_WORD_MIN_FREQUENCY` constant is used by the ingest English-ratio filter, so the two thresholds cannot drift apart. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
 
 | token | candidates | result |
 | --- | --- | --- |
@@ -208,7 +208,7 @@ Most terms keep their frequency and move up only because the vocabulary is small
 Three opt-in ingest flags remove automation, non-English prose and exact duplicate text before anything reaches the pipeline. All are off by default, so the plain command still writes every text-bearing event.
 
 - `--exclude-bots` — drop the event when the actor login ends with `[bot]`, or when it is in the explicit `BOT_LOGINS` set. That set currently holds only `Copilot`, GitHub's Copilot bot account, which carries no suffix. A login that merely contains `bot` (`botanist`, `robotfan`) is a human account and is kept.
-- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total`. A token is known only when `word_frequency(token, "en") >= 1e-06`, the shared `ENGLISH_WORD_MIN_FREQUENCY` constant defined in `src/vocabops/normalize.py` and imported here; the lemmatizer's candidate check uses the same constant, so the two thresholds cannot drift apart. Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
+- `--min-english-ratio R` — tokenize the extracted text with the normalizer's `tokenize()`, keep alphabetic tokens only, and compute `known / total`. A token is known only when `word_frequency(token, "en") >= 3e-07`, the shared `ENGLISH_WORD_MIN_FREQUENCY` constant defined in `src/vocabops/normalize.py` and imported here (it was `1e-06` when the runs in this section were made); the lemmatizer's candidate check uses the same constant, so the two thresholds cannot drift apart. Keep the document when the ratio is `>= R`; drop it when the ratio is lower. A document with zero alphabetic tokens is skipped as empty. `R` must be in 0..1.
 - `--dedup-text` — after the other filters, drop a document whose stripped full text is byte-identical to a document already kept in the run. Comparison is `sha256` of `text.strip()` and the first occurrence in file order wins. Off by default. This is exact duplication only: near-duplicates, and templated documents that share a long prefix but differ in the tail, are not detected.
 
 Both filters run at fixed positions: event-type/body extraction, then bot filter, then language filter, then event-ID checks, then optional exact-text deduplication, then `--max-docs`. Every dropped event lands in exactly one counter, and `ingest()` returns them all: `input_files`, `events_seen`, `documents_written`, `skipped_no_body`, `skipped_bot`, `skipped_language`, `skipped_no_tokens`, `skipped_duplicate_text`, `duplicates`, `malformed`, `missing_id`. Neither flag touches normalization, the lemmatizer, `se_specificity`, or the ranking; exclusion happens only here.
@@ -317,7 +317,12 @@ The language filter reliably removes CJK text: the old `また` and `初筛` row
 
 ### Clean run: shared English floor and exact-text dedup
 
-The token test now uses the same "real English word" floor as the lemmatizer. `src/vocabops/normalize.py` defines `ENGLISH_WORD_MIN_FREQUENCY = 1e-06`; its lemmatizer checks against that constant and `src/vocabops/ingest.py` imports the same object, so the two thresholds cannot drift apart silently. A token counts as English only when `word_frequency(token, "en") >= 1e-06`.
+This section records the 1-hour clean run made while the shared floor was `1e-06`. The
+constant is now `3e-07` (see [the floor change](#frequency-floor-analysis) below), so
+re-running this ingest today would keep more documents; the counters and tables here
+are kept exactly as measured then.
+
+The token test then used the same "real English word" floor as the lemmatizer. `src/vocabops/normalize.py` defined `ENGLISH_WORD_MIN_FREQUENCY = 1e-06`; its lemmatizer checked against that constant and `src/vocabops/ingest.py` imports the same object, so the two thresholds cannot drift apart silently. A token counted as English only when `word_frequency(token, "en") >= 1e-06`.
 
 The floor is two orders of magnitude above wordfreq's noise floor for non-words (`merg` 1.6e-08, `requir` 3.3e-08) and above the trace frequencies at which wordfreq lists Spanish and Portuguese words (`código` 1.7e-08, `repositório` 0.0). That trace presence was exactly what defeated the old `> 0` rule and put `código` at rank 8 of the filtered ranking. The floor stays at or below the technical lemmas the corpus needs (`invalidate` is exactly 1e-06, `invoke` 2.14e-06, `cache` 4.27e-06), but it is still a general-English judgement: `invalidation` (1.7e-07) and `fallback` (4.57e-07) fall below it, so an otherwise English document containing them scores slightly under 1.0 and still clears the 0.6 document cut comfortably.
 
@@ -407,6 +412,12 @@ The `namespace` result was not what the exact-only limitation predicted. The 20 
 
 ## Full-day run: 24 hourly files
 
+The ingest counters below were produced at the `1e-06` English-ratio floor. The
+ranking numbers were then recomputed after the floor change to `3e-07`; the tables
+that depend on lemmatization (ranking sizes, top 40, target terms) show the `3e-07`
+values with the old position for comparison. The corpus file itself was not
+re-ingested, so every tf/df comparison isolates the lemmatizer.
+
 The adapter now accepts `--input` more than once and treats the files as one run. Files are sorted by path before reading, so the output and the dedup winners do not depend on the order the flags are given in. All counters aggregate, the event-ID and exact-text dedup sets span every file, and `--max-docs` caps the total number of documents written. The summary starts with `input files: N`; every other counter line is unchanged. A single `--input` still writes exactly what it did before, plus that one `input files: 1` line.
 
 ```bash
@@ -445,57 +456,93 @@ Counters over 24 hourly files (99 MB compressed, 2026-11-18 00:00–23:59 UTC), 
 
 The totals close: 121,837 − 84,710 − 14,874 − 3,954 − 18 − 891 = 17,390. No event ID repeats across the day, so the cross-file event-ID dedup set never fires here; the 891 exact-text duplicates are different events with identical prose — mostly short command comments (`@codex review`, `/trunk merge`, `LGTM`) and repeated templated agent design text. The day corpus is 17,390 documents, 2,188,397 normalized tokens and 33 MB of JSONL, sha256 `74027bb1a605104c6800a7a62731eea1d7a9394cab5ae33f1e3b34ef8207e9ab`. A second ingest run produced a byte-identical file; both pipeline runs also reproduce byte-identically. Ingest takes about 19 s and each pipeline run about 7 s.
 
-Ranking sizes: 13,507 rows at `min_df = 3` and 6,314 rows at `min_df = 10`. The 1-hour clean corpus, for comparison, had 658 documents, 86,482 tokens and 2,513 rows at `min_df = 3`.
+Ranking sizes at `3e-07`: 13,242 rows at `min_df = 3` and 6,215 rows at `min_df = 10`
+(13,507 and 6,314 at `1e-06`; the merges remove 265 and 99 rows respectively). The
+1-hour clean corpus, for comparison, had 658 documents, 86,482 tokens and 2,513 rows
+at `min_df = 3`.
 
-Top 40 at `min_df = 10`:
+Top 40 at `min_df = 10` (positions after the `3e-07` change; `old #` is the position
+of the same term under `1e-06`):
 
-| # | term | tf | df | | # | term | tf | df |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `worktree` | 589 | 289 | | 21 | `e2e` | 714 | 415 |
-| 2 | `sha256` | 241 | 136 | | 22 | `runbook` | 100 | 67 |
-| 3 | `webhook` | 240 | 109 | | 23 | `unmerged` | 97 | 86 |
-| 4 | `arm64` | 219 | 153 | | 24 | `toml` | 95 | 66 |
-| 5 | `allowlist` | 202 | 132 | | 25 | `readback` | 100 | 78 |
-| 6 | `docstring` | 197 | 138 | | 26 | `idempotency` | 88 | 69 |
-| 7 | `typecheck` | 191 | 160 | | 27 | `eslint` | 109 | 65 |
-| 8 | `vitest` | 191 | 154 | | 28 | `v0` | 925 | 347 |
-| 9 | `yml` | 190 | 121 | | 29 | `codeql` | 85 | 57 |
-| 10 | `opencode` | 181 | 90 | | 30 | `worktrees` | 85 | 59 |
-| 11 | `pytest` | 156 | 103 | | 31 | `supabase` | 84 | 44 |
-| 12 | `openapi` | 145 | 97 | | 32 | `lgtm` | 83 | 79 |
-| 13 | `lockfile` | 140 | 85 | | 33 | `mergeable` | 82 | 70 |
-| 14 | `soroban` | 140 | 97 | | 34 | `pnpm` | 81 | 47 |
-| 15 | `coderabbit` | 139 | 83 | | 35 | `retries` | 299 | 233 |
-| 16 | `sbom` | 137 | 21 | | 36 | `picomatch` | 75 | 35 |
-| 17 | `subagent` | 159 | 65 | | 37 | `deepseek` | 74 | 45 |
-| 18 | `vercel` | 132 | 72 | | 38 | `i18n` | 74 | 57 |
-| 19 | `chatgpt` | 122 | 61 | | 39 | `webhooks` | 74 | 45 |
-| 20 | `dependabot` | 122 | 71 | | 40 | `aarch64` | 72 | 41 |
+| # | term | tf | df | old # |
+| --- | --- | --- | --- | --- |
+| 1 | `worktree` | 589 | 289 | 1 |
+| 2 | `sha256` | 241 | 136 | 2 |
+| 3 | `webhook` | 240 | 109 | 3 |
+| 4 | `arm64` | 219 | 153 | 4 |
+| 5 | `allowlist` | 202 | 132 | 5 |
+| 6 | `docstring` | 197 | 138 | 6 |
+| 7 | `typecheck` | 191 | 160 | 7 |
+| 8 | `vitest` | 191 | 154 | 8 |
+| 9 | `yml` | 190 | 121 | 9 |
+| 10 | `opencode` | 181 | 90 | 10 |
+| 11 | `pytest` | 156 | 103 | 11 |
+| 12 | `openapi` | 145 | 97 | 12 |
+| 13 | `lockfile` | 140 | 85 | 13 |
+| 14 | `soroban` | 140 | 97 | 14 |
+| 15 | `coderabbit` | 139 | 83 | 15 |
+| 16 | `sbom` | 137 | 21 | 16 |
+| 17 | `subagent` | 159 | 65 | 17 |
+| 18 | `vercel` | 132 | 72 | 18 |
+| 19 | `chatgpt` | 122 | 61 | 19 |
+| 20 | `dependabot` | 122 | 71 | 20 |
+| 21 | `e2e` | 714 | 415 | 21 |
+| 22 | `runbook` | 100 | 67 | 22 |
+| 23 | `unmerged` | 97 | 86 | 23 |
+| 24 | `toml` | 95 | 66 | 24 |
+| 25 | `readback` | 100 | 78 | 25 |
+| 26 | `idempotency` | 88 | 69 | 26 |
+| 27 | `eslint` | 109 | 65 | 27 |
+| 28 | `v0` | 925 | 347 | 28 |
+| 29 | `codeql` | 85 | 57 | 29 |
+| 30 | `worktrees` | 85 | 59 | 30 |
+| 31 | `supabase` | 84 | 44 | 31 |
+| 32 | `lgtm` | 83 | 79 | 32 |
+| 33 | `mergeable` | 82 | 70 | 33 |
+| 34 | `pnpm` | 81 | 47 | 34 |
+| 35 | `picomatch` | 75 | 35 | 36 |
+| 36 | `deepseek` | 74 | 45 | 37 |
+| 37 | `i18n` | 74 | 57 | 38 |
+| 38 | `webhooks` | 74 | 45 | 39 |
+| 39 | `aarch64` | 72 | 41 | 40 |
+| 40 | `if1` | 71 | 21 | 41 |
 
-This is a materially better ranking than the 1-hour one: most of the top 40 is real infrastructure and tooling vocabulary (`worktree`, `webhook`, `allowlist`, `docstring`, `lockfile`, `sbom`, `idempotency`, `mergeable`, `runbook`, `lgtm`, `retries`). Automation and product names are still present (`coderabbit`, `dependabot`, `vercel`, `supabase`, `opencode`, `deepseek`, `chatgpt`, `soroban`), and `subagent` is agent-generated prose. `retries` sits at 35 rather than near `retry`: `retry` (3.72e-07) is below the `1e-06` lemma floor, so the plural stays its own term.
+The list is nearly unchanged: `retries`, which used to sit at 35 as its own row,
+merged into `retry` at 105, pulling everything below it up by one.
+
+This is a materially better ranking than the 1-hour one: most of the top 40 is real infrastructure and tooling vocabulary (`worktree`, `webhook`, `allowlist`, `docstring`, `lockfile`, `sbom`, `idempotency`, `mergeable`, `runbook`). Automation and product names are still present (`coderabbit`, `dependabot`, `vercel`, `supabase`, `opencode`, `deepseek`, `chatgpt`, `soroban`), `lgtm` is a review convention rather than vocabulary, and `subagent` is agent-generated prose. `retries` no longer has its own row at 35: at the `3e-07` floor it merges into `retry`, which now ranks 105 (`tf` 1,453, `df` 781).
 
 `min_df = 3` is visibly noisier. Its top 10 is `c606` (681 occurrences in 4 documents; a device codename repeated in generated simulator-preview prose), `worktree`, `sha256`, `webhook`, `arm64`, `allowlist`, `docstring`, `termux` (192 / 3), `typecheck`, `vitest`. Rows with `tf` in the hundreds and `df` in the single digits (`c606`, `termux`, `anyps5` 127 / 7, `boykopovar` 124 / 7) are repetition inside a handful of documents, and `--min-df 10` removes them.
 
-Target-term positions, 1-hour clean corpus (`min_df = 3`, 2,513 rows) vs the day at `min_df = 3` (13,507 rows) and `min_df = 10` (6,314 rows):
+Target-term positions at the `3e-07` floor, day corpus. The 1-hour columns and the
+`1e-06` column are historical (those runs used the old floor); tf/df do not change
+when only the emitted-row filter changes.
 
-| term | 1h rank | 1h tf / df | day df3 rank | day df3 tf / df | day df10 rank | day df10 tf / df |
-| --- | --- | --- | --- | --- | --- | --- |
-| `fallback` | 102 | 41 / 31 | 226 | 1,137 / 653 | 199 | 1,137 / 653 |
-| `reproduce` | 250 | 77 / 61 | 2,710 | 1,660 / 1,309 | 779 | 1,660 / 1,309 |
-| `persist` | 604 | 13 / 9 | 3,748 | 480 / 327 | 1,247 | 480 / 327 |
-| `invoke` | 754 | 5 / 5 | 4,459 | 175 / 149 | 1,606 | 175 / 149 |
-| `propagate` | 682 | 3 / 3 | 5,062 | 67 / 55 | 1,916 | 67 / 55 |
-| `invalidate` | — | 2 / 1 | 4,083 | 106 / 80 | 1,404 | 106 / 80 |
-| `retrieve` | — | 3 / 2 | 7,754 | 58 / 48 | 3,486 | 58 / 48 |
-| `underlying` | 1,860 | 3 / 3 | 9,326 | 76 / 71 | 4,405 | 76 / 71 |
+| term | 1h rank | day df3 rank | day df10 rank (`1e-06`) | day df10 rank (`3e-07`) | day tf / df |
+| --- | --- | --- | --- | --- | --- |
+| `fallback` | 102 | 211 | 199 | **188** | 1,192 / 688 |
+| `reproduce` | 250 | 2,670 | 779 | 748 | 1,660 / 1,309 |
+| `persist` | 604 | 3,684 | 1,247 | 1,208 | 480 / 327 |
+| `invoke` | 754 | 4,371 | 1,606 | 1,560 | 175 / 149 |
+| `propagate` | 682 | 4,949 | 1,916 | 1,868 | 67 / 55 |
+| `invalidate` | — | 4,006 | 1,404 | 1,362 | 106 / 80 |
+| `retrieve` | — | 7,559 | 3,486 | 3,408 | 58 / 48 |
+| `underlying` | 1,860 | 9,096 | 4,405 | 4,312 | 76 / 71 |
 
-Every target gains 19×–53× raw frequency. At `min_df = 3` the absolute rank is *worse* than in the 1-hour corpus for most of them even though the corpus is 26× larger, because the 24-hour vocabulary grows 5.4× and the extra hours contribute proportionally more product, tooling and automation terms. `invalidate` and `retrieve` clear `min_df = 3` for the first time (document frequency 80 and 48). At `min_df = 10` six target terms sit inside the top 2,000, but `fallback` — the most frequent target by far — stays around position 200: it is common (1,137 occurrences) yet not distinctive, and its plural is still a separate, higher-ranked row (see the floor analysis below).
+Every target gains 19×–53× raw frequency. At `min_df = 3` the absolute rank is *worse* than in the 1-hour corpus for most of them even though the corpus is 26× larger, because the 24-hour vocabulary grows and the extra hours contribute proportionally more product, tooling and automation terms. `invalidate` and `retrieve` clear `min_df = 3` for the first time (document frequency 80 and 48). At `min_df = 10` six target terms sit inside the top 2,000, but `fallback` — the most frequent target by far — stays around position 190: it is common (1,192 occurrences) yet not distinctive. After the floor change, `fallbacks` no longer exists as a separate, higher-ranked row (#113 at `1e-06`) and is folded into `fallback`.
 
-## Frequency-floor analysis (measurement only)
+## Frequency-floor analysis
 
-The lemmatizer validates candidate lemmas at `wordfreq >= 1e-06`, the same constant the ingest English-ratio filter uses. That floor is a general-English judgement and sits above two technical words this corpus needs: `fallback` (4.57e-07) and `encode` (8.91e-07). As a result `fallbacks` never merges into `fallback`, and `encoded` / `encoding` / `encodes` never merge into `encode`.
+Before this round the lemmatizer validated candidate lemmas at `wordfreq >= 1e-06`, the same constant the ingest English-ratio filter uses. That floor is a general-English judgement and sat above two technical words this corpus needs: `fallback` (4.57e-07) and `encode` (8.91e-07). As a result `fallbacks` never merged into `fallback`, and `encoded` / `encoding` / `encodes` never merged into `encode`.
 
-This section measures what a floor of `3e-07` would do. **No constant and no production code was changed.** The measurement is a throwaway script under `out/` (not committed): it reads `out/gharchive/documents-day.jsonl`, reproduces the lemmatizer's irregular map, suffix candidates and "most frequent accepted candidate wins" rule at both floors, and compares the outcomes token by token. Counts are over raw corpus tokens before stopword removal; none of the 925 changed tokens is a stopword, so no change is hidden by that step.
+The measurement below was made in round 6 with the constant still at `1e-06`. On that
+evidence the constant was lowered to `3e-07` this round; the outcome is recorded at the
+end of this section. The measurement is a throwaway script under `out/` (not
+committed): it reads `out/gharchive/documents-day.jsonl`, reproduces the lemmatizer's
+irregular map, suffix candidates and "most frequent accepted candidate wins" rule at
+both floors, and compares the outcomes token by token. Counts are over raw corpus
+tokens before stopword removal; none of the 925 changed tokens is a stopword, so no
+change is hidden by that step.
 
 | measure | value |
 | --- | --- |
@@ -507,7 +554,7 @@ This section measures what a floor of `3e-07` would do. **No constant and no pro
 
 So the floor is not a large lever on volume — a third of a percent of tokens — but it is a visible lever on vocabulary shape: 747 distinct terms disappear through merging.
 
-Top 25 changed tokens by tf (`@1e-6` is today's lemma, `@3e-7` the alternative):
+Top 25 changed tokens by tf (`@1e-6` is the then-current lemma, `@3e-7` the alternative):
 
 | # | token | tf | lemma @1e-6 | lemma @3e-7 | freq@1e-6 | freq@3e-7 | judgement |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -539,19 +586,51 @@ Top 25 changed tokens by tf (`@1e-6` is today's lemma, `@3e-7` the alternative):
 
 Judgement: 22 of the 25 are correct merges or an acceptable verb/noun conflation. Three are wrong: `always` → `alway`, `speed` → `spe`, and `unbounded` → `unbound`. The failing pattern is the same in all three — an `-ed` or `-s` token whose bare stem happens to be a wordfreq entry just above `3e-07` — so lowering the floor does not only admit real technical lemmas, it also admits more stem fragments. Any lower floor would need a guard against exactly those cases.
 
-What happens to the two named terms:
+What happened to the two named terms once the floor was lowered:
 
-- `fallbacks` (tf 55, df 51) — today it stays its own row, and at `min_df = 10` it ranks **#113, above `fallback` at #199**, because wordfreq lists the plural at 1.48e-08 and the singular at 4.57e-07, so the plural gets a much higher specificity score. At `3e-07` it merges: `fallback` goes from tf 1,137 / df 653 to tf 1,192 / df 688. Recomputed against the current ranking, that would place `fallback` around #189 at `min_df = 10` — a 10-place gain, and one fewer misleading row.
-- `encoded` (tf 84, df 69), plus `encodes` (37 / 30) and 119 of the 130 `encoding` occurrences — all merge into `encode` at `3e-07`. `encode` goes from tf 61 / df 46 (rank #1,727 at `min_df = 10`) to tf 301 / df 195 (hypothetically around #827). The remaining 11 `encoding` occurrences come from `encodings`, which already maps to `encoding` at both floors.
+- `fallbacks` (tf 55, df 51) — under the old floor it stayed its own row and at `min_df = 10` ranked **#113, above `fallback` at #199**, because wordfreq lists the plural at 1.48e-08 and the singular at 4.57e-07, so the plural got a much higher specificity score. At `3e-07` it merges: `fallback` goes from tf 1,137 / df 653 to tf 1,192 / df 688 and moves #199 → #188 (the round-6 estimate was ~#189).
+- `encoded` (tf 84, df 69), plus `encodes` (37 / 30) and 119 of the 130 `encoding` occurrences — all merge into `encode` at `3e-07`. `encode` goes from tf 61 / df 46 (rank #1,727 at `min_df = 10`) to tf 301 / df 195 and rank #789 (the estimate was ~#827). The remaining 11 `encoding` occurrences come from `encodings`, which already maps to `encoding` at both floors; `encoding` survives as a low-ranked row (#4,355, tf 11, df 11).
 - `invalidation` is unaffected: it is a derivational form the suffix rules never propose, so no floor change merges it into `invalidate`.
+
+### Applied: the floor is now `3e-07`
+
+The constant in `src/vocabops/normalize.py` is now `ENGLISH_WORD_MIN_FREQUENCY = 3e-07`
+and the ingest English-ratio filter imports it unchanged, so both moved together. On
+the fixed day corpus the chain of effects is:
+
+| measure | `1e-06` | `3e-07` |
+| --- | --- | --- |
+| `min_df = 10` rows | 6,314 | 6,215 |
+| `min_df = 3` rows | 13,507 | 13,242 |
+| `fallback` rank / tf / df | 199 / 1,137 / 653 | 188 / 1,192 / 688 |
+| `encode` rank / tf / df | 1,727 / 61 / 46 | 789 / 301 / 195 |
+| `retry` rank / tf / df | — (`retries` #35) | 105 / 1,453 / 781 |
+
+`fallbacks`, `encoded`, `encodes`, `retries`, `credentials` and `endpoints` no longer
+exist as separate rows. The three known bad outcomes land as follows at `min_df = 10`:
+`alway` #258 (tf 798, df 668), `spe` #699 (tf 258, df 127), `unbound` #975 (tf 160,
+df 114). The stem `speed` also survives as its own small row (#6,171, tf 15, df 14) from
+the plural `speeds`, which now lemmatizes to `speed` rather than to `spe`.
+
+The ingest side effect is real and was not used to rebuild this corpus: re-running the
+day ingest at `3e-07` (same flags, no `--dedup-text`) keeps 294 more documents — the
+language-filter drop falls from 3,954 to 3,660 and 18,575 documents are written before
+text dedup. The 17,390-document corpus used for every ranking here was built at
+`1e-06`, so the tf/df differences above come from lemmatization alone.
+
+Tests: one pre-existing assertion pinned the constant (`test_english_floor_is_shared_with_the_lemmatizer`,
+`1e-06` → `3e-07`). New tests pin the four required merges (`fallbacks`, `encoded`,
+`credentials`, `retries`) and the three known defects, so a later change cannot silently
+"fix" or worsen them without a test failure.
 
 ## Known limitations
 
 - **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files, 17,390 documents) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-only slice of the ecosystem.
-- **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, filtered by `wordfreq` at `1e-06`. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it keeps its inflections as separate rows (`fallback` at 4.57e-07, so `fallbacks` does not merge; `encode` at 8.91e-07, so `encoded` / `encoding` stay apart), and a real word that happens to match a stem can win (`rune` is a candidate for `running` but loses to the much more frequent `run`). When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
+- **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, filtered by `wordfreq` at `3e-07`. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it still keeps its inflections as separate rows, and a stem that wordfreq happens to list just above it can win — that is how `always` becomes `alway`, `speed` becomes `spe` and `unbounded` becomes `unbound`. A real word can also win over another real word (`rune` is a candidate for `running` but loses to the much more frequent `run`). When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
+- **Tokenization keeps digit-bearing fragments.** `\w+` treats `18T02` (from an ISO timestamp), `05Z`, `44px` and `v0` as tokens, and the tokenizer only drops pure numbers. These enter the ranking as vocabulary. They are 82 of the top 500 rows in the Core 500 candidate; fixing the tokenizer is a prerequisite for any release.
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
 - **Thin smoothing.** With a corpus this small, `alpha = 1` and `vocab_size` in the denominator dominate absolute scores; only the ordering is meaningful. One-off rare words can outrank repeated target terms.
-- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the shared `1e-06` English-token floor, and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms to the tail.
+- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the shared `3e-07` English-token floor, and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms to the tail.
 
 Reproducibility rules for runs of this pipeline are in [Pipeline conventions](pipeline-conventions.md).
