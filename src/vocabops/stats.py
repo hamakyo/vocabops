@@ -105,11 +105,14 @@ def se_specificity(
 def rank_terms(
     documents: Sequence[Sequence[str]],
     alpha: float = ALPHA,
+    min_df: int = 1,
 ) -> list[dict[str, float | int | str]]:
     """Rank every corpus term by ``se_specificity``.
 
     Rows are sorted by specificity descending, then term ascending, which keeps
-    the output stable across runs and platforms.
+    the output stable across runs and platforms. ``min_df`` drops rows whose
+    document frequency is below the threshold; scores and the smoothing
+    denominator are still computed over the full corpus.
     """
     tf = term_frequency(documents)
     df = document_frequency(documents)
@@ -118,6 +121,8 @@ def rank_terms(
 
     rows: list[dict[str, float | int | str]] = []
     for term, count in tf.items():
+        if df[term] < min_df:
+            continue
         score = se_specificity(
             term=term,
             tf=count,

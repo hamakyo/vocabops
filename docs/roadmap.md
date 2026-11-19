@@ -33,7 +33,7 @@ Goal: generate a reproducible software-engineering vocabulary ranking without bu
 ### Source adapters
 
 - [ ] ingest a small Stack Overflow / SOTorrent sample
-- [ ] ingest a bounded GH Archive sample
+- [x] ingest a bounded GH Archive sample
 - [ ] ingest CodeSearchNet docstrings
 - [x] integrate wordfreq baseline frequencies
 
@@ -44,9 +44,9 @@ Goal: generate a reproducible software-engineering vocabulary ranking without bu
 - [x] preserve document boundaries
 - [x] assign stable/reproducible document IDs
 - [x] tokenize
-- [x] lemmatize (heuristic, not POS-aware)
+- [x] lemmatize (dictionary-validated, not POS-aware)
 - [ ] part-of-speech tag
-- [ ] preserve source-family metadata
+- [x] preserve source-family metadata
 
 ### Statistics
 
