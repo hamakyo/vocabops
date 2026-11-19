@@ -1,0 +1,13 @@
+What happened: after the deploy, writes were slow and some requests returned an
+old value. The underlying cause was a lock held during every write.
+
+Impact: about four minutes of slow writes. Reads were served from the cache, so
+most users saw no error.
+
+Fix: we now persist the write first and release the lock before we update the
+cache. If the cache update fails, we invalidate the entry so the next read goes
+to the database. This is a safe fallback because the database is the source of
+truth.
+
+Follow-up: add a test that can reproduce the lock under load, and make sure
+errors propagate to the metrics layer so we see them next time.

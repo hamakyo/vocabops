@@ -1,0 +1,15 @@
+## Error model
+
+When a handler cannot complete a request, it should return a typed error rather
+than a string. The client can then invoke the matching fallback or show a
+message.
+
+Errors must propagate up the stack until a layer can handle them. Do not catch
+an error and return null, because the caller cannot tell a missing value from a
+failure.
+
+The API should persist an idempotency key with every write so a retry does not
+create a second record. If a key is reused with a different payload, invalidate
+it and return a conflict error.
+
+We still need to reproduce the timeout case before we freeze the schema.
