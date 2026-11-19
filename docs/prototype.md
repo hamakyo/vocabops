@@ -65,6 +65,24 @@ se_specificity  = ln(se_rate(t) / general_rate(t))
 
 The implementation and the same formula live in the docstring of `src/vocabops/stats.py`.
 
+## Lemmatization
+
+`src/vocabops/normalize.py` keeps a small irregular-verb map (`went` → `go`, `built` → `build`) and otherwise lets suffix rules *propose* candidate lemmas instead of predicting one. A candidate is accepted only when `wordfreq` knows it as an English word.
+
+Candidates for `-ed` / `-ing` tokens: the bare stem, the stem with a restored final `e`, and the doubled-consonant-undone form of both (`merged` → `merg`, `merge`; `running` → `runn`, `runne`, `run`, `rune`). Candidates for `-s` forms: the plain `-s` strip, `-ies` → `-y`, `-sses` / `-shes` / `-ches` / `-xes` / `-zes` / `-ses` minus `-es`, plus the stem and `stem + "e"` variants where they apply (`caches` → `cach`, `cache`; `aliases` → `aliase`, `alias`).
+
+A derived candidate counts as real when `word_frequency(candidate, "en") >= 1e-06`; among accepted candidates the most frequent wins. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
+
+| token | candidates | result |
+| --- | --- | --- |
+| `merged` | `merg`, `merge` | `merge` |
+| `required` | `requir`, `require` | `require` |
+| `repeating` | `repeate`, `repeat` | `repeat` |
+| `unchanged` | `unchange` (0.0) | `unchanged` |
+| `caches` | `cach`, `cache` | `cache` |
+| `propagated` | `propagat`, `propagate` | `propagate` |
+| `aliases` | `aliase`, `alias` | `alias` |
+
 ## Fixture corpus
 
 Five short documents, all original prose:
@@ -77,7 +95,9 @@ Five short documents, all original prose:
 
 They deliberately repeat `retrieve`, `persist`, `invoke`, `propagate`, `reproduce`, `invalidate`, `fallback`, and `underlying` across different documents, alongside ordinary general English so the ranking has contrast.
 
-On the current fixtures (5 documents, 276 tokens, 149 ranked terms) seven of those eight terms land in the top 20. `underlying` ranks lower because it is comparatively common in general English, which is the effect the baseline is supposed to capture.
+On the current fixtures (5 documents, 276 tokens, 148 ranked terms) seven of those eight terms land in the top 20. `underlying` ranks lower because it is comparatively common in general English, which is the effect the baseline is supposed to capture.
+
+Moving from the suffix-guessing lemmatizer to the dictionary-validated one changed the fixture ranking in exactly one place: `added` now lemmatizes to `add` instead of `ad`, so the one-row `ad` term disappears and `add` absorbs it (`tf` 1 → 2, `df` 1 → 2). The vocabulary drops from 149 to 148 terms, so every `se_specificity` value shifts by the same small amount through the smoothing denominator. The term order is otherwise unchanged; `add` moves up as its frequency doubles.
 
 ## GH Archive adapter and a bounded real run
 
@@ -131,18 +151,62 @@ Input: `https://data.gharchive.org/2026-11-18-3.json.gz`, 3,989,290 bytes, sha25
 
 Re-running the ingest and the ranking produced byte-identical files.
 
-The top of the real ranking is not yet a usable vocabulary list. The first ten `min_df = 3` rows are `unchange`, `xhigh`, `coderabbit`, `merg`, `requir`, `enforc`, `aliase`, `sha256`, `declar`, `unresolv`. Three separate effects are visible:
+This first ranking came from the suffix-guessing lemmatizer and is kept as the baseline for the comparison below. Its first ten `min_df = 3` rows are `unchange`, `xhigh`, `coderabbit`, `merg`, `requir`, `enforc`, `aliase`, `sha256`, `declar`, `unresolv`. Three separate effects are visible:
 
 - Bots and automation: `coderabbit` (a review bot, 102 occurrences in 47 documents) and `18t03` are review-bot boilerplate, not human prose.
-- Lemma artifacts: `unchange`, `merg`, `requir`, `enforc`, `declar`, `resolv`, `defin`, `repeate`, `reache` are suffix-rule lemmatizer damage. `unchange` is a further instance of the `unchanged` case already listed under known limitations.
+- Lemma artifacts: `unchange`, `merg`, `requir`, `enforc`, `declar`, `resolv`, `defin`, `repeate`, `reache` are suffix-rule lemmatizer damage.
 - Non-English and token noise: CJK fragments (`また`, `初筛`), `xhigh` (a numeric-config token), `pukujan`, `aprè`.
 
 Of the eight fixture target terms, none reaches the top 800 of either ranking; `fallback` is the best of them at 825th (`min_df = 3`). In the full ranking (`min_df = 1`, 21,872 terms) they rank: `fallback` 3,559; `reproduce` 15,658; `invoke` 16,670; `invalidate` 16,842; `persist` 16,863; `propagate` 16,907; `retrieve` 18,921; `underlying` 20,018. With `min_df = 3` (4,235 terms) they rank: `fallback` 825; `reproduce` 1,388; `invoke` 1,793; `invalidate` 1,870; `persist` 1,879; `propagate` 1,903; `retrieve` 2,942; `underlying` 3,461. They are present but far from the top: one hour of issue and pull-request prose is small and dominated by product-specific tokens and automation.
 
+#### Re-ranking after the dictionary-validated lemmatizer
+
+The same `out/gharchive/documents.jsonl`, snapshot id `gharchive-2026-11-18-3-proto` and `--min-df 3` were re-run into a new directory, leaving the earlier output untouched:
+
+```bash
+.venv/bin/python -m vocabops.pipeline \
+  --input out/gharchive/documents.jsonl \
+  --output out/gharchive-rank-df3-lemma2 \
+  --snapshot-id gharchive-2026-11-18-3-proto \
+  --min-df 3
+```
+
+The corpus is identical (1,445 documents, 199,202 tokens). The `min_df = 3` ranking shrinks from 4,235 to 4,146 rows: 303 old terms disappear and 214 new ones appear, dominated by damaged stems being replaced by their real words (`resolv` → `resolve` / `unresolved`, `aliase` → `alias`, `docstr` → `docstring`, `referenc` → `reference`, `encod` → `encoded` / `encoding`). Re-running produced byte-identical files.
+
+| # | old top 10 | new top 10 |
+| --- | --- | --- |
+| 1 | `unchange` | `xhigh` |
+| 2 | `xhigh` | `coderabbit` |
+| 3 | `coderabbit` | `sha256` |
+| 4 | `merg` | `18t03` |
+| 5 | `requir` | `opencode` |
+| 6 | `enforc` | `pukujan` |
+| 7 | `aliase` | `vercel` |
+| 8 | `sha256` | `また` |
+| 9 | `declar` | `worktree` |
+| 10 | `unresolv` | `初筛` |
+
+None of `merg`, `requir`, `enforc`, `declar`, `defin`, `repeate`, `unchange` (the `unchanged` artifact), `cach`, `propagat`, `invok` or `retriev` appears anywhere in the new ranking. In the old one they held positions 4, 5, 6, 9, 14, 21, 1, 870, and `propagat` / `invok` / `retriev` did not occur at all. The former damaged rows are now real lemmas: `merge` (`tf` 370 → 520), `require` (112 → 348), `enforce` (11 → 81), `declare` (126 → 239), `define` (26 → 109), `repeat` (40 → 74), `cache` (72 → 76), `alias` (new, 67), and `unchanged` (new, 160). What is left at the top is bot and automation text, product and tool names, non-English fragments and config tokens; no lemma artifact remains in the top 30.
+
+Target-term positions with `min_df = 3` (4,235 → 4,146 rows):
+
+| term | old | new | tf (old → new) |
+| --- | --- | --- | --- |
+| `fallback` | 825 | 713 | 124 → 119 |
+| `reproduce` | 1,388 | 1,255 | 86 → 86 |
+| `invoke` | 1,793 | 1,667 | 14 → 14 |
+| `invalidate` | 1,870 | 1,744 | 5 → 5 |
+| `persist` | 1,879 | 1,753 | 19 → 19 |
+| `propagate` | 1,903 | 1,777 | 6 → 6 |
+| `retrieve` | 2,942 | 2,851 | 4 → 4 |
+| `underlying` | 3,461 | 3,374 | 5 → 5 |
+
+Most terms keep their frequency and move up only because the vocabulary is smaller. `fallback` loses five occurrences because `fallbacks` no longer merges into it: `fallback` itself is below the `1e-06` validation threshold (4.57e-07), so its plural is returned unchanged and appears as its own row (`fallbacks`, `tf` 5, `df` 3).
+
 ## Known limitations
 
 - **Fixture corpus only, plus one bounded GH Archive hour.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. The GH Archive adapter exists and one hour has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one hour of issue and pull-request prose is not a corpus.
-- **Heuristic lemmatizer.** An irregular-verb map plus suffix rules, not a morphological analyzer or POS-aware lemmatizer. It has no prefix handling and known edge cases, e.g. plural silent-e words ending in `-ches` (`caches` → `cach`) and prefixed forms (`unchanged` → `unchange`). Part-of-speech tagging is not implemented, so homographs share one row.
+- **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, filtered by `wordfreq` at `1e-06`. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it keeps its inflections as separate rows (`fallback` at 4.57e-07, so `fallbacks` does not merge; `encode` at 8.91e-07, so `encoded` / `encoding` stay apart), and a real word that happens to match a stem can win (`rune` is a candidate for `running` but loses to the much more frequent `run`). When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
 - **Thin smoothing.** With a corpus this small, `alpha = 1` and `vocab_size` in the denominator dominate absolute scores; only the ordering is meaningful. One-off rare words can outrank repeated target terms.

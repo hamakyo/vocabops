@@ -54,6 +54,14 @@ def test_lemmatize_plurals():
     assert lemmatize("classes") == "class"
     assert lemmatize("matches") == "match"
     assert lemmatize("tokens") == "token"
+    assert lemmatize("aliases") == "alias"
+    assert lemmatize("entries") == "entry"
+    assert lemmatize("settings") == "setting"
+
+
+def test_lemmatize_plurals_keep_silent_e():
+    # The old suffix table produced "cach"; the dictionary check finds "cache".
+    assert lemmatize("caches") == "cache"
 
 
 def test_lemmatize_past_tense_restores_final_e():
@@ -77,6 +85,85 @@ def test_lemmatize_present_participle():
     assert lemmatize("reproducing") == "reproduce"
     assert lemmatize("running") == "run"
     assert lemmatize("matching") == "match"
+
+
+def test_lemmatize_past_tense_is_dictionary_validated():
+    # Each of these used to come out as a non-word (merg, requir, enforc, ...).
+    assert lemmatize("merged") == "merge"
+    assert lemmatize("required") == "require"
+    assert lemmatize("enforced") == "enforce"
+    assert lemmatize("declared") == "declare"
+    assert lemmatize("defined") == "define"
+    assert lemmatize("repeated") == "repeat"
+    assert lemmatize("changed") == "change"
+
+
+def test_lemmatize_present_participle_is_dictionary_validated():
+    # "repeating" used to become "repeate"; "caching" -> "cach".
+    assert lemmatize("merging") == "merge"
+    assert lemmatize("repeating") == "repeat"
+    assert lemmatize("defining") == "define"
+    assert lemmatize("caching") == "cache"
+
+
+def test_lemmatize_requires_keeps_the_lemma_not_the_inflection():
+    assert lemmatize("requires") == "require"
+
+
+def test_lemmatize_leaves_unchanged_alone_instead_of_inventing_a_stem():
+    # "unchange" is not a word, so the original token survives.
+    assert lemmatize("unchanged") == "unchanged"
+
+
+def test_lemmatize_target_terms_stay_in_base_form():
+    for term in [
+        "retrieve",
+        "persist",
+        "invoke",
+        "propagate",
+        "reproduce",
+        "invalidate",
+        "fallback",
+        "underlying",
+    ]:
+        assert lemmatize(term) == term
+
+
+def test_lemmatize_never_returns_a_known_damaged_form():
+    damaged = {
+        "merg",
+        "requir",
+        "enforc",
+        "declar",
+        "defin",
+        "repeate",
+        "unchange",
+        "cach",
+        "propagat",
+        "invok",
+        "retriev",
+    }
+    tokens = [
+        "merged",
+        "merging",
+        "required",
+        "requires",
+        "enforced",
+        "declared",
+        "defined",
+        "defining",
+        "repeating",
+        "repeated",
+        "unchanged",
+        "caches",
+        "caching",
+        "propagated",
+        "invoking",
+        "retrieved",
+        "persisted",
+        "invalidated",
+    ]
+    assert not damaged & {lemmatize(token) for token in tokens}
 
 
 def test_lemmatize_leaves_short_words_intact():
