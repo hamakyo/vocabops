@@ -71,7 +71,7 @@ The implementation and the same formula live in the docstring of `src/vocabops/s
 
 Candidates for `-ed` / `-ing` tokens: the bare stem, the stem with a restored final `e`, and the doubled-consonant-undone form of both (`merged` → `merg`, `merge`; `running` → `runn`, `runne`, `run`, `rune`). Candidates for `-s` forms: the plain `-s` strip, `-ies` → `-y`, `-sses` / `-shes` / `-ches` / `-xes` / `-zes` / `-ses` minus `-es`, plus the stem and `stem + "e"` variants where they apply (`caches` → `cach`, `cache`; `aliases` → `aliase`, `alias`).
 
-A derived candidate counts as real when `word_frequency(candidate, "en") >= 3e-07` (the lemmatizer's own `LEMMA_MIN_FREQUENCY`; it was `1e-06` before the day-corpus floor change documented below); among accepted candidates the most frequent wins. At `3e-07` the plurals and inflections of `fallback` and `encode` merge into their lemmas (`fallbacks` → `fallback`, `encoded` / `encoding` → `encode`). The same floor also has three known bad outcomes: `always` → `alway`, `speed` → `spe` and `unbounded` → `unbound`, because wordfreq lists those bare stems just above the floor. Those are documented defects, not goals; the suffix rules have no guard against them. The ingest English-ratio filter does **not** use this constant: it has its own `ENGLISH_RATIO_MIN_FREQUENCY = 1e-06`, because the two roles ask different questions (see [decoupled floors](#decoupled-floors-and-the-v3-day-corpus)). Sharing one value between them caused the round-8 language regression. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
+A derived candidate counts as real when `word_frequency(candidate, "en") >= 3e-07` (the lemmatizer's own `LEMMA_MIN_FREQUENCY`; it was `1e-06` before the day-corpus floor change documented below); among accepted candidates the most frequent wins. Since the v5 round every acceptance also passes a bare-stem ratio guard: when the original token has a nonzero wordfreq, the candidate must keep at least `MIN_CANDIDATE_FREQUENCY_RATIO = 0.02` of it. The guard is what stops `always` → `alway` (ratio 0.00068) and `speed` → `spe` (0.0058), and it also blocks the attested `ceiling` → `ceil` (0.0048). It does not catch `unbounded` → `unbound` (ratio 2.04, two real words), which remains a documented defect. At `3e-07` the plurals and inflections of `fallback` and `encode` merge into their lemmas (`fallbacks` → `fallback`, `encoded` / `encoding` → `encode`). The ingest English-ratio filter does **not** use this constant: it has its own `ENGLISH_RATIO_MIN_FREQUENCY = 1e-06`, because the two roles ask different questions (see [decoupled floors](#decoupled-floors-and-the-v3-day-corpus)). Sharing one value between them caused the round-8 language regression. The original token is never in that comparison, because an inflected form can be more frequent than its lemma (`required` 1.05e-04 vs `require` 6.03e-05). If no candidate passes, the token is returned unchanged: `unchanged` stays `unchanged` instead of becoming `unchange`. Short tokens (length ≤ 3), non-alphabetic tokens, and `-ing` stems shorter than four characters are left alone, so `string` and `bus` survive.
 
 | token | candidates | result |
 | --- | --- | --- |
@@ -927,17 +927,70 @@ candidate the suffix rules propose, and for `ceiling` the rules propose no alter
 A future guard that compares the original token's frequency (or POS) would remove this
 case without touching the intended merges; it is not part of this round.
 
-**Views are stale.** `data/core500-vocab-v0.jsonl` and `data/core500-technical-v0.jsonl`
-were built on v3 and were not regenerated. 61 of the vocabulary view's 500 terms no longer
-exist as rows in v4 because they merged into a headword (`rebased` → `rebase`, `params` →
-`param`, `utils` → `util`, `deprecated` → `deprecate`, `deduplicated` → `deduplicate`,
-`maintainers` → `maintainer`), and 91 surviving view rows absorbed inflections (their tf and
-rank changed). The views are correct for v3 and cannot be described as v4 output.
+### The frequency-ratio guard and v5
+
+The guard that Part 5 called future work is now `MIN_CANDIDATE_FREQUENCY_RATIO = 0.02` in
+`src/vocabops/normalize.py`. A candidate is rejected when the original token has nonzero
+wordfreq and `word_frequency(candidate) / word_frequency(token) < 0.02`. The test runs on
+every acceptance path, including attested ones, so `ceil` (attested as a function name)
+still loses to `ceiling`. Tokens at wordfreq 0 bypass the ratio: the `dedup` family has no
+ratio to judge, and attestation governs. The threshold is a gap cut, not a tuned value —
+the good merges measured run 0.102 (`credentials` → `credential`) and above; the bad ones
+(`always` → `alway` 0.00068, `ceiling` → `ceil` 0.0048, `speed` → `spe` 0.0058) sit below
+0.006.
+
+Command (same corpus as v4, so only lemmatization differs):
+
+```bash
+.venv/bin/python -m vocabops.pipeline \
+  --input out/gharchive/documents-day-v3.jsonl \
+  --output out/gharchive-rank-day-v5-df10 \
+  --snapshot-id gharchive-2026-11-18-day-v5 --min-df 10
+```
+
+**Blast radius, computed from the two lemma maps.** 36 raw types (2,074 occurrences) change
+lemma, all back to themselves: 10 are intended blocks (`always`, `series`, `speed`,
+`ceiling`, `morning`, `physics`, `clothes`, `politics`, `naked`, `netherlands`; 1,672
+occurrences), 3 are non-English (`outils`, `règles`, `résultats`; 9 occurrences), and 23
+are collateral damage (393 occurrences). The collateral class is real and is the round's
+main surprise: the attestation win class has **wordfreq-0.0 candidates** (`webhook`,
+`untrack`, `unassign`, `paginate`, `precompute`, `prefill`, …), so its ratio is 0 and the
+guard rejects every one. `webhooks` is again its own row (#40), `webhook` drops from tf 314
+to 240, and `untrack` disappears below `df 10` behind `untracked` (#372). The full 36-row
+table and the per-row judgement are in
+[Part 6](core500-evaluation.md#part-6--the-frequency-ratio-guard-the-v5-ranking-and-views-v1).
+A narrow exemption for attested zero-frequency candidates would keep `always`, `speed` and
+`ceiling` blocked and restore those 20 merges; that is the next lemmatizer change.
+
+| measure | v4 | v5 |
+| --- | --- | --- |
+| `min_df 10` rows | 6,137 | 6,134 |
+| terms leaving / entering | — | 14 / 11 |
+| `fallback` rank | 195 | 191 |
+| `reproduce` rank | 695 | 688 |
+| `retry` / `credential` / `endpoint` / `encode` | 112 / 308 / 394 / 731 | 108 / 302 / 388 / 724 |
+| `alway` | #258, tf 798 | gone; `always` #5,361 |
+| `spe` | #648, tf 258 | gone; `speed` #4,845 |
+| `ceil` | #205, tf 173 | gone; `ceiling` #3,308 |
+| `unbound` | #916, tf 160 | #910, tf 160 |
+
+Top-500 composition (v5 classification): (a) 109, (b) 236, (c) 91, (d) 54, (e) 10.
+
+### Views v1
+
+The views are no longer stale. `data/ranking-v5-classification.jsonl` reuses the v3 bucket
+for every term that still exists (928 of its 1,004 rows) and classifies the 76 new ones;
+the vocabulary side reaches 500 at rank 1,004. `scripts/build_views.py` then regenerates
+`data/core500-vocab-v1.jsonl` (500 rows: 339 a, 161 c) and
+`data/core500-technical-v1.jsonl` (300 b rows, covering v5 ranks 1–679). Against the v0
+views: 58 vocabulary rows are new and 58 dropped (mostly inflections merged in v4), 442 are
+shared; 26 technical rows are new. Target view-ranks: `fallback` #62 (was #60), `reproduce`
+#307 (was #316), `retry` #37 (was #34). Both files regenerate byte-identically (`cmp`).
 
 ## Known limitations
 
 - **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files; 17,390 documents in v1 and v3, 17,674 in v2) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-dominant slice of the ecosystem — the language filter still leaks a small Latin-script and Devanagari residue, as the v0.2 ranking shows.
-- **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, accepted when `wordfreq` puts them at `3e-07` or the corpus attests them in `>= 3` documents. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it keeps its inflections as separate rows unless the corpus attests the lemma (which is how `rebase` and `dedup` now merge), and a stem that wordfreq or attestation accepts can win over the original word — that is how `always` becomes `alway`, `speed` becomes `spe`, `unbounded` becomes `unbound` and, since v4, `ceiling` becomes `ceil`. When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
+- **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, accepted when `wordfreq` puts them at `3e-07` or the corpus attests them in `>= 3` documents, and then filtered by the `0.02` ratio guard against bare stems. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it keeps its inflections as separate rows unless the corpus attests the lemma (which is how `rebase` and `dedup` merge), and a candidate can still be wrong — `unbounded` becomes `unbound` because both are real words and the ratio guard cannot separate them. The guard does stop `always` → `alway`, `speed` → `spe` and `ceiling` → `ceil`, but its literal form also blocks real merges whose candidate has wordfreq 0.0 (`webhooks` → `webhook`, `untracked` → `untrack`); 23 such merges are documented in [Part 6](core500-evaluation.md#part-6--the-frequency-ratio-guard-the-v5-ranking-and-views-v1). When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
 - **Tokenization still keeps some digit-bearing fragments.** The three digit rules remove ISO timestamps, CSS measurements and digit-first shards, which deleted 31 fragment rows from the v0 ranking, but letter-first tokens are kept by design (`sha256`, `arm64`, `e2e`) and that also keeps `v0`, `1080p`, `500s` and `v006`. One time shard also survives (`00z`, #1,776, from `2026-11-18 ~10:00Z` forms). In the v0.2 top 500, 35 of the 53 fragment rows are the classes these rules deliberately keep (31 identifier/codename/version shards and 4 other artifacts); the other 18 are non-English strings, which the tokenizer cannot fix.
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
