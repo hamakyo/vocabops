@@ -623,14 +623,88 @@ Tests: one pre-existing assertion pinned the constant (`test_english_floor_is_sh
 `credentials`, `retries`) and the three known defects, so a later change cannot silently
 "fix" or worsen them without a test failure.
 
+## Tokenizer rules and the re-ingested day corpus (v2)
+
+The Core 500 v0 audit (see [the evaluation](core500-evaluation.md)) found 82 fragment
+rows in its top 500. The largest class was tokenizer-made: an ISO timestamp such as
+`2026-11-18T02:07:00Z` became `18t02` / `07` / `00z` under the bare `\w+` tokenizer and
+entered the ranking as vocabulary. Three rules in `tokenize()` now remove that class;
+they run in the tokenizer rather than in `clean_text()` so the pipeline and the ingest
+English-ratio test see identical tokens:
+
+1. ISO-8601 datetimes (with optional fractional seconds and `Z`/offset) and bare ISO
+   dates are stripped from the text before tokenizing.
+2. Tokens matching `^\d+(px|pt|rem|em)$` are dropped (CSS measurements).
+3. Digit-first tokens with a digit after at least one letter are dropped
+   (`^\d.*[A-Za-z].*\d$`, which catches `18t02` and `7a7e3f9f`).
+
+Letter-first digit tokens are never dropped, so real technical terms survive:
+`sha256` (#2), `arm64` (#4), `e2e` (#19), `i18n` (#36), `aarch64` (#42), `base64` (#52)
+and `x64` (#135) all keep their rows. The rules are pinned by
+`test_tokenize_strips_full_iso_timestamps_before_splitting`,
+`test_tokenize_strips_standalone_iso_dates_but_keeps_years`,
+`test_tokenize_drops_css_measurement_tokens`,
+`test_tokenize_drops_digit_first_shards_only` and
+`test_tokenize_keeps_vocabulary_and_drops_timestamp_css_shards`; the suite is 88 tests.
+
+The day corpus was then re-ingested with the same flags at the `3e-07` floor:
+
+```bash
+INPUTS=$(for f in out/gharchive/2026-11-18/*.json.gz; do printf -- '--input %s ' "$f"; done)
+
+.venv/bin/python -m vocabops.ingest gharchive $INPUTS \
+  --output out/gharchive/documents-day-v2.jsonl \
+  --max-docs 100000 --exclude-bots --min-english-ratio 0.6 --dedup-text
+
+.venv/bin/python -m vocabops.pipeline \
+  --input out/gharchive/documents-day-v2.jsonl \
+  --output out/gharchive-rank-day-v2-df10 \
+  --snapshot-id gharchive-2026-11-18-day-v2 --min-df 10
+```
+
+| counter | v1 (`1e-06`) | v2 (`3e-07`) | delta |
+| --- | --- | --- | --- |
+| input files | 24 | 24 | 0 |
+| events seen | 121,837 | 121,837 | 0 |
+| documents written | 17,390 | 17,674 | +284 |
+| skipped: no body | 84,710 | 84,710 | 0 |
+| skipped: bot actor | 14,874 | 14,874 | 0 |
+| skipped: below english ratio | 3,954 | 3,660 | −294 |
+| skipped: no alphabetic tokens | 18 | 18 | 0 |
+| skipped: duplicate text | 891 | 901 | +10 |
+
+The totals close (121,837 − 84,710 − 14,874 − 3,660 − 18 − 901 = 17,674). Of the 294
+documents the lower floor admits, 10 are exact duplicates and 284 are new. The v2
+corpus is 17,674 documents, 2,225,982 normalized tokens (+37,585, +1.7%), sha256
+`998195329e64b08b7a7d2b3c0d4c55982159ad90af76fcda2fac5e9a9df6d6e6`. A second ingest,
+pipeline run and candidate extraction each reproduced byte-identically. At `min_df 10`
+the v2 ranking has 6,474 rows (6,215 in v1); every target slips a few places on the
+larger vocabulary (`fallback` 188 → 199, `reproduce` 748 → 832, `persist` 1,208 →
+1,363, `invalidate` 1,362 → 1,522, `invoke` 1,560 → 1,731, `propagate` 1,868 → 2,056,
+`retrieve` 3,408 → 3,652, `underlying` 4,312 → 4,560).
+
+Effect on the ranking: 31 of the 82 v0 fragment rows are gone from the ranking entirely
+(25 timestamp shards, 5 CSS measurements, 1 hex string) and no timestamp or CSS row
+remains in the top 500. The top 40 barely moves: `yml` 9 → 6, `e2e` 21 → 19, `openbot`
+46 → 37, `deepseek` 36 → 29, `if1` 40 → 44. Residuals stay visible and are documented
+rather than hidden: `v0` (#30), `1080p` (#265) and `500s` (#402) are letter-first digit
+tokens the rules keep by design, and one time shard survives at #1,990 — `00z`, from
+forms such as `2026-11-18 ~10:00Z` where a separator stops the datetime pattern.
+
+The fragment share of the top 500 did **not** fall: 16.4% → 22.0%. The 284 new
+documents are disproportionately French and Spanish, because the `3e-07` English-ratio
+floor counts many of wordfreq's trace-level French and Spanish entries as English. They
+add 64 new non-English rows, including `aucun` at #40 (from #239). The tokenizer fix
+removed everything it targeted; the language filter is now the dominant defect.
+
 ## Known limitations
 
-- **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files, 17,390 documents) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-only slice of the ecosystem.
+- **Fixture corpus plus one bounded GH Archive day.** The fixture ranking demonstrates the mechanism and says nothing about corpus-scale vocabulary. A full day (24 hourly files; 17,390 documents in v1, 17,674 in v2) has been run, but Stack Overflow and CodeSearchNet adapters are not implemented, and one day of issue and pull-request prose is still a narrow, English-dominant slice of the ecosystem — the language filter leaks Latin-script non-English, as the v2 ranking shows.
 - **Dictionary-validated lemmatizer, not a morphological analyzer.** An irregular-verb map plus suffix rules that propose candidates, filtered by `wordfreq` at `3e-07`. There is no prefix handling and no POS tagging, so homographs share one row. The threshold is a general-English judgement: a real technical lemma below it still keeps its inflections as separate rows, and a stem that wordfreq happens to list just above it can win — that is how `always` becomes `alway`, `speed` becomes `spe` and `unbounded` becomes `unbound`. A real word can also win over another real word (`rune` is a candidate for `running` but loses to the much more frequent `run`). When no candidate passes, the token is returned unchanged, which is safe but leaves prefixed forms such as `unchanged` unmerged with `changed`.
-- **Tokenization keeps digit-bearing fragments.** `\w+` treats `18T02` (from an ISO timestamp), `05Z`, `44px` and `v0` as tokens, and the tokenizer only drops pure numbers. These enter the ranking as vocabulary. They are 82 of the top 500 rows in the Core 500 candidate; fixing the tokenizer is a prerequisite for any release.
+- **Tokenization still keeps some digit-bearing fragments.** The three digit rules remove ISO timestamps, CSS measurements and digit-first shards, which deleted 31 fragment rows from the v0 ranking, but letter-first tokens are kept by design (`sha256`, `arm64`, `e2e`) and that also keeps `v0`, `1080p`, `500s` and `v006`. One time shard also survives (`00z`, from `2026-11-18 ~10:00Z` forms). In the v0.1 top 500 these are 21 of the 110 fragment rows (plus 11 codename fragments with no digits); the other 78 are non-English strings, which the tokenizer cannot fix.
 - **wordfreq baseline.** General-English rates come from `wordfreq` per-token frequency, not a frequency-matched corpus. `wordfreq` combines several sources with its own weighting, and its coverage of technical vocabulary is uneven, which distorts scores for rare terms.
 - **Single-token terms only.** No multi-word expressions or collocations.
 - **Thin smoothing.** With a corpus this small, `alpha = 1` and `vocab_size` in the denominator dominate absolute scores; only the ordering is meaningful. One-off rare words can outrank repeated target terms.
-- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the shared `3e-07` English-token floor, and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms to the tail.
+- **Thin thresholds.** `--min-df` provides a document-frequency floor, and the opt-in ingest filters remove `[bot]` actors, documents below the shared `3e-07` English-token floor, and exact duplicate text (`--dedup-text`), but there is no minimum term frequency, no near-duplicate or template filter, and no stopword extension for product names. Automation without a `[bot]` login can still reach the top, and mixed-language documents that clear the 0.6 ratio still contribute non-English terms — in v0.1 they are 78 of the top 500 (15.6%), because `3e-07` counts wordfreq's trace-level French and Spanish entries as English.
 
 Reproducibility rules for runs of this pipeline are in [Pipeline conventions](pipeline-conventions.md).
