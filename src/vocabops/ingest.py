@@ -8,8 +8,11 @@ The first adapter reads GH Archive event files. Usage::
         --max-docs 2000
 
 ``--input`` is either a local ``.json.gz`` / ``.json`` file or an http(s) URL
-to one. The file is streamed line by line; it is never loaded into memory as
-one string. Each line is one GitHub event (one JSON object).
+to one. It may be given more than once; the files are then processed in sorted
+path order, as one run. Each file is streamed line by line and is never loaded
+into memory as one string. Each line is one GitHub event (one JSON object).
+Counters and the event-ID / exact-text dedup state span all files, so the run
+is independent of the order the ``--input`` flags are given in.
 
 Only events that carry human-written prose become documents:
 
@@ -95,6 +98,7 @@ __all__ = [
     "english_ratio",
     "extract_document",
     "ingest",
+    "ingest_many",
     "is_bot_actor",
     "iter_event_lines",
     "main",
@@ -270,7 +274,7 @@ def ingest(
 ) -> dict[str, int]:
     """Stream ``source`` and write up to ``max_docs`` documents to JSONL.
 
-    Returns counters: ``events_seen``, ``documents_written``,
+    Returns counters: ``input_files``, ``events_seen``, ``documents_written``,
     ``skipped_no_body``, ``skipped_bot``, ``skipped_language``,
     ``skipped_no_tokens``, ``skipped_duplicate_text``, ``duplicates``,
     ``malformed``, ``missing_id``.
@@ -279,15 +283,47 @@ def ingest(
     then optional exact-text deduplication, so every dropped event lands in
     exactly one counter.
     """
+    return ingest_many(
+        [source],
+        output_path,
+        max_docs=max_docs,
+        source_family=source_family,
+        exclude_bots=exclude_bots,
+        min_english_ratio=min_english_ratio,
+        dedup_text=dedup_text,
+    )
+
+
+def ingest_many(
+    sources: Sequence[str | Path],
+    output_path: Path,
+    max_docs: int = DEFAULT_MAX_DOCS,
+    source_family: str = GHARCHIVE_FAMILY,
+    *,
+    exclude_bots: bool = False,
+    min_english_ratio: float | None = None,
+    dedup_text: bool = False,
+) -> dict[str, int]:
+    """Stream several archives as one run, in sorted path order.
+
+    Files are sorted by their string path before reading, so the output and
+    the dedup winners do not depend on the order the sources are passed in.
+    All counters and both dedup sets span the whole run; ``--max-docs`` caps
+    the total number of documents written across all files.
+    """
     if max_docs < 0:
         raise ValueError("max_docs must not be negative")
     if min_english_ratio is not None and not 0.0 <= min_english_ratio <= 1.0:
         raise ValueError("min_english_ratio must be between 0 and 1")
+    if not sources:
+        raise ValueError("at least one input source is required")
 
+    sources = sorted(sources, key=str)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     counters = {
+        "input_files": len(sources),
         "events_seen": 0,
         "documents_written": 0,
         "skipped_no_body": 0,
@@ -305,71 +341,76 @@ def ingest(
     with output_path.open("w", encoding="utf-8", newline="\n") as output:
         if max_docs == 0:
             return counters
-        lines = iter_event_lines(source)
-        try:
-            for line in lines:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    counters["malformed"] += 1
-                    continue
-                if not isinstance(event, Mapping):
-                    counters["malformed"] += 1
-                    continue
-
-                counters["events_seen"] += 1
-                text = extract_document(event)
-                if text is None:
-                    counters["skipped_no_body"] += 1
-                    continue
-
-                actor = _actor_login(event)
-                if exclude_bots and is_bot_actor(actor):
-                    counters["skipped_bot"] += 1
-                    continue
-
-                if min_english_ratio is not None:
-                    ratio = english_ratio(text)
-                    if ratio is None:
-                        counters["skipped_no_tokens"] += 1
+        full = False
+        for source in sources:
+            if full:
+                break
+            lines = iter_event_lines(source)
+            try:
+                for line in lines:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        counters["malformed"] += 1
                         continue
-                    if ratio < min_english_ratio:
-                        counters["skipped_language"] += 1
+                    if not isinstance(event, Mapping):
+                        counters["malformed"] += 1
                         continue
 
-                event_id = event.get("id")
-                if event_id is None or str(event_id).strip() == "":
-                    counters["missing_id"] += 1
-                    continue
-
-                doc_id = document_id(source_family, str(event_id).strip())
-                if doc_id in seen:
-                    counters["duplicates"] += 1
-                    continue
-                seen.add(doc_id)
-
-                if dedup_text:
-                    digest = _text_digest(text)
-                    if digest in seen_text:
-                        counters["skipped_duplicate_text"] += 1
+                    counters["events_seen"] += 1
+                    text = extract_document(event)
+                    if text is None:
+                        counters["skipped_no_body"] += 1
                         continue
-                    seen_text.add(digest)
 
-                record = {
-                    "doc_id": doc_id,
-                    "source_family": source_family,
-                    "repo": _mapping(event.get("repo")).get("name") or None,
-                    "actor": actor,
-                    "text": text,
-                }
-                output.write(json.dumps(record, ensure_ascii=False) + "\n")
-                counters["documents_written"] += 1
-                if counters["documents_written"] >= max_docs:
-                    break
-        finally:
-            # Close the generator so the gzip reader and any HTTP response are
-            # released even when we stop early at --max-docs.
-            lines.close()
+                    actor = _actor_login(event)
+                    if exclude_bots and is_bot_actor(actor):
+                        counters["skipped_bot"] += 1
+                        continue
+
+                    if min_english_ratio is not None:
+                        ratio = english_ratio(text)
+                        if ratio is None:
+                            counters["skipped_no_tokens"] += 1
+                            continue
+                        if ratio < min_english_ratio:
+                            counters["skipped_language"] += 1
+                            continue
+
+                    event_id = event.get("id")
+                    if event_id is None or str(event_id).strip() == "":
+                        counters["missing_id"] += 1
+                        continue
+
+                    doc_id = document_id(source_family, str(event_id).strip())
+                    if doc_id in seen:
+                        counters["duplicates"] += 1
+                        continue
+                    seen.add(doc_id)
+
+                    if dedup_text:
+                        digest = _text_digest(text)
+                        if digest in seen_text:
+                            counters["skipped_duplicate_text"] += 1
+                            continue
+                        seen_text.add(digest)
+
+                    record = {
+                        "doc_id": doc_id,
+                        "source_family": source_family,
+                        "repo": _mapping(event.get("repo")).get("name") or None,
+                        "actor": actor,
+                        "text": text,
+                    }
+                    output.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    counters["documents_written"] += 1
+                    if counters["documents_written"] >= max_docs:
+                        full = True
+                        break
+            finally:
+                # Close the generator so the gzip reader and any HTTP response
+                # are released even when we stop early at --max-docs.
+                lines.close()
 
     return counters
 
@@ -387,7 +428,13 @@ def build_parser() -> argparse.ArgumentParser:
     gharchive.add_argument(
         "--input",
         required=True,
-        help="local .json.gz/.json path or http(s) URL",
+        action="append",
+        dest="inputs",
+        metavar="PATH",
+        help=(
+            "local .json.gz/.json path or http(s) URL; repeat for several files, "
+            "which are processed as one run in sorted path order"
+        ),
     )
     gharchive.add_argument(
         "--output",
@@ -430,8 +477,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("error: --min-english-ratio must be between 0 and 1", file=sys.stderr)
         return 2
     try:
-        counters = ingest(
-            args.input,
+        counters = ingest_many(
+            args.inputs,
             args.output,
             max_docs=args.max_docs,
             exclude_bots=args.exclude_bots,
@@ -442,9 +489,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except OSError as exc:  # network and gzip failures
-        print(f"error: could not read {args.input}: {exc}", file=sys.stderr)
+        print(
+            f"error: could not read {', '.join(args.inputs)}: {exc}", file=sys.stderr
+        )
         return 2
 
+    print(f"input files:        {counters['input_files']}")
     print(f"events seen:        {counters['events_seen']}")
     print(f"documents written:  {counters['documents_written']}")
     print(f"documents skipped:  {counters['skipped_no_body']} (no body)")
