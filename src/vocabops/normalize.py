@@ -9,20 +9,27 @@ that every step is inspectable and reproducible:
 4. drop URLs
 5. lowercase
 6. tokenize on word characters
-7. lemmatize with an irregular map plus suffix rules
+7. lemmatize with an irregular map, suffix-rule candidates and a wordfreq
+   dictionary check
 8. remove English stopwords
 
-This is a heuristic lemmatizer, not a full morphological analyzer. See
-``docs/prototype.md`` for the known limitations.
+The lemmatizer is dictionary-validated rather than a full morphological
+analyzer: suffix rules only *propose* candidate lemmas, and a candidate is
+accepted only when ``wordfreq`` knows it as an English word. See
+``docs/prototype.md`` for the remaining limitations.
 """
 
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+
+from wordfreq import word_frequency
 
 __all__ = [
     "STOPWORDS",
     "IRREGULAR_LEMMAS",
+    "DERIVED_MIN_FREQUENCY",
     "clean_text",
     "tokenize",
     "lemmatize",
@@ -106,29 +113,12 @@ STOPWORDS: frozenset[str] = frozenset(
 
 _VOWELS = frozenset("aeiou")
 
-# Stems that take a restored final "e" after -ed / -ing stripping, e.g.
-# propagat + e -> propagate, invok + e -> invoke, cach + e -> cache.
-_E_RESTORE_SUFFIXES = (
-    "at",
-    "iz",
-    "bl",
-    "iv",
-    "ev",
-    "ok",
-    "ch",
-    "ng",
-    "ag",
-    "ur",
-    "os",
-    "us",
-    "ac",
-    "uc",
-    "yp",
-    "ov",
-    "rv",
-    "dl",
-    "as",
-)
+# A generated candidate counts as a real English word at or above this
+# wordfreq frequency. The threshold sits well above wordfreq's noise floor for
+# non-words (e.g. "merg" 1.6e-08, "cach" 2.5e-08, "requir" 3.3e-08) and at or
+# below every technical lemma this corpus needs (e.g. "propagate" and
+# "invalidate" at 1e-06, "invoke" 2.1e-06).
+DERIVED_MIN_FREQUENCY = 1e-06
 
 
 def clean_text(text: str) -> str:
@@ -176,21 +166,73 @@ def _strip_doubled_consonant(stem: str) -> str:
     return stem
 
 
-def _restore_e(stem: str) -> str:
-    # Stems in -tch are already complete: "matching" -> "match", not "matche".
-    if stem.endswith("tch"):
-        return stem
-    if stem.endswith(_E_RESTORE_SUFFIXES):
-        return stem + "e"
-    return stem
+@lru_cache(maxsize=None)
+def _frequency(word: str) -> float:
+    """English frequency of ``word`` according to wordfreq (cached)."""
+    return word_frequency(word, "en")
 
 
+def _derived_candidates(token: str) -> set[str]:
+    """Suffix-rule candidate lemmas for an inflected token.
+
+    Every rule contributes its output to a set instead of returning one guess,
+    so a silent "e" no longer has to be predicted from a suffix table: both the
+    bare stem and the stem with a restored "e" are offered, and the dictionary
+    check in :func:`lemmatize` decides which one is a word.
+    """
+    candidates: set[str] = set()
+
+    # Plurals / third-person singular.
+    if token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        candidates.add(token[:-1])
+        if token.endswith("ies") and len(token) > 4:
+            candidates.add(token[:-3] + "y")
+        if len(token) > 4 and token.endswith(("sses", "xes", "zes", "ches", "shes")):
+            # "boxes" -> "box", "matches" -> "match".
+            candidates.add(token[:-2])
+        if len(token) > 4 and token.endswith("ses"):
+            # Lemma already ends in "s": "aliases" -> "alias".
+            candidates.add(token[:-2])
+
+    # Past tense / past participle.
+    if token.endswith("ed") and len(token) > 4:
+        stem = token[:-2]
+        candidates.update({stem, stem + "e"})
+        undone = _strip_doubled_consonant(stem)
+        candidates.update({undone, undone + "e"})
+        if token.endswith("ied"):
+            candidates.add(token[:-3] + "y")
+
+    # Present participle.
+    if token.endswith("ing") and len(token) > 5:
+        stem = token[:-3]
+        if len(stem) >= 4:
+            # Avoid destroying short words such as "string" -> "str".
+            candidates.update({stem, stem + "e"})
+            undone = _strip_doubled_consonant(stem)
+            candidates.update({undone, undone + "e"})
+
+    candidates.discard(token)
+    return candidates
+
+
+@lru_cache(maxsize=None)
 def lemmatize(token: str) -> str:
-    """Reduce an inflected English word to a canonical form.
+    """Reduce an inflected English word to a dictionary-validated lemma.
 
-    Order of operations: irregular map, then plural, then past tense, then
-    present participle. Rules only fire on lowercase alphabetic tokens of
-    length > 3 so short words such as "is" or "bus" are left alone.
+    Order of operations: irregular map, candidate generation from the suffix
+    rules, then validation against ``wordfreq``. A candidate is accepted only
+    when its English frequency is at least :data:`DERIVED_MIN_FREQUENCY`; among
+    accepted candidates the most frequent wins. If no candidate survives, the
+    original token is returned, because a real inflected word is always a safer
+    answer than an invented stem.
+
+    The original token is never compared against the candidates: an inflected
+    form can be more frequent than its lemma (``required`` 1.05e-04 vs
+    ``require`` 6.03e-05), which would otherwise keep the inflection.
+
+    Rules only fire on lowercase alphabetic tokens of length > 3 so short words
+    such as "is" or "bus" are left alone.
     """
     token = token.lower()
     if token in IRREGULAR_LEMMAS:
@@ -198,34 +240,14 @@ def lemmatize(token: str) -> str:
     if len(token) <= 3 or not token.isalpha():
         return token
 
-    # Plurals / third-person singular. Note: silent-e words ending in -ches
-    # ("caches") lose the final "e" here; documented as a known limitation.
-    if token.endswith("ies") and len(token) > 4:
-        return token[:-3] + "y"
-    if token.endswith("sses") and len(token) > 4:
-        return token[:-2]
-    if token.endswith(("shes", "ches", "xes", "zes")):
-        return token[:-2]
-    if token.endswith("s") and not token.endswith(("ss", "us", "is")):
-        return token[:-1]
-
-    # Past tense.
-    if token.endswith("ied") and len(token) > 4:
-        return token[:-3] + "y"
-    if token.endswith("ed") and len(token) > 4:
-        stem = _strip_doubled_consonant(token[:-2])
-        return _restore_e(stem)
-
-    # Present participle.
-    if token.endswith("ing") and len(token) > 5:
-        stem = token[:-3]
-        if len(stem) < 4:
-            # Avoid destroying short words such as "string" -> "str".
-            return token
-        stem = _strip_doubled_consonant(stem)
-        return _restore_e(stem)
-
-    return token
+    best: str | None = None
+    best_frequency = 0.0
+    for candidate in sorted(_derived_candidates(token)):
+        frequency = _frequency(candidate)
+        if frequency >= DERIVED_MIN_FREQUENCY and frequency > best_frequency:
+            best = candidate
+            best_frequency = frequency
+    return best if best is not None else token
 
 
 def normalize(text: str, remove_stopwords: bool = True) -> list[str]:
