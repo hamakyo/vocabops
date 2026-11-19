@@ -27,17 +27,33 @@ event type                       text
 ===============================  ==========================================
 
 Everything else is skipped. Bodies that are empty or whitespace-only are
-skipped, and nothing more clever than that is attempted: there is no bot,
-template, or markup filter yet.
+skipped. Two opt-in ingest filters remove automated and non-English text:
+
+``--exclude-bots``
+    Drop documents whose event actor login ends with ``[bot]``, plus the small
+    explicit :data:`BOT_LOGINS` set (GitHub's ``Copilot`` account, which has no
+    suffix). Off by default; without the flag the output is unchanged apart
+    from the added ``actor`` field.
+
+``--min-english-ratio R``
+    Drop documents whose share of alphabetic tokens known to ``wordfreq`` as
+    English is below ``R`` (0..1). Documents with no alphabetic tokens are
+    skipped as empty. Off by default (``None``).
+
+Filter order is fixed: event-type/body extraction, then bot filter, then
+language filter, then ID checks and deduplication. Each dropped event is
+counted under exactly one reason.
 
 Each output line is one document::
 
-    {"doc_id": ..., "source_family": "gharchive", "repo": ..., "text": ...}
+    {"doc_id": ..., "source_family": "gharchive", "repo": ..., "actor": ...,
+     "text": ...}
 
-``doc_id`` is ``sha256(source_family + "/" + event id)``, matching the
-document-identity rule in ``docs/pipeline-conventions.md``. Event IDs are
-deduplicated, so a repeated event produces one document. Ingest stops after
-``--max-docs`` documents (default 2000).
+``actor`` is the event actor's login, or ``null`` when absent. ``doc_id`` is
+``sha256(source_family + "/" + event id)``, matching the document-identity
+rule in ``docs/pipeline-conventions.md``. Event IDs are deduplicated, so a
+repeated event produces one document. Ingest stops after ``--max-docs``
+documents (default 2000).
 
 The downloaded archive and the generated JSONL are working data. Keep them in
 ``out/`` or ``/tmp``; neither is committed.
@@ -52,18 +68,27 @@ import io
 import json
 import sys
 from collections.abc import Generator, Iterator, Mapping, Sequence
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+from wordfreq import word_frequency
+
+from vocabops.normalize import tokenize
 
 __all__ = [
     "GHARCHIVE_FAMILY",
     "DEFAULT_MAX_DOCS",
     "USER_AGENT",
+    "BOT_LOGIN_SUFFIX",
+    "BOT_LOGINS",
     "document_id",
+    "english_ratio",
     "extract_document",
-    "iter_event_lines",
     "ingest",
+    "is_bot_actor",
+    "iter_event_lines",
     "main",
 ]
 
@@ -71,6 +96,12 @@ GHARCHIVE_FAMILY = "gharchive"
 DEFAULT_MAX_DOCS = 2000
 USER_AGENT = "vocabops-ingest/0.1 (+https://github.com/)"
 GZIP_MAGIC = b"\x1f\x8b"
+
+# GitHub marks app/automation accounts with a "[bot]" login suffix, but a few
+# accounts are bots without it. Copilot is GitHub's Copilot bot account; it is
+# listed explicitly so the suffix rule stays the general one.
+BOT_LOGIN_SUFFIX = "[bot]"
+BOT_LOGINS = frozenset({"Copilot"})
 
 
 def document_id(source_family: str, identifier: str) -> str:
@@ -130,6 +161,42 @@ def _is_url(source: str) -> bool:
     return urlparse(source).scheme in {"http", "https"}
 
 
+def is_bot_actor(login: str | None) -> bool:
+    """Whether an actor login is a known bot account.
+
+    A ``[bot]`` *suffix* marks automation; a login that merely contains
+    ``bot`` (``botanist``, ``robotfan``) is a human account and is kept.
+    """
+    if not login:
+        return False
+    return login.endswith(BOT_LOGIN_SUFFIX) or login in BOT_LOGINS
+
+
+@lru_cache(maxsize=None)
+def _is_english_word(token: str) -> bool:
+    """Whether ``wordfreq`` knows ``token`` as an English word (cached)."""
+    return word_frequency(token, "en") > 0.0
+
+
+def english_ratio(text: str) -> float | None:
+    """Share of alphabetic tokens that ``wordfreq`` knows as English.
+
+    Returns ``None`` when the text has no alphabetic tokens at all, so the
+    caller can treat such a document as empty.
+    """
+    tokens = [token for token in tokenize(text) if token.isalpha()]
+    if not tokens:
+        return None
+    return sum(1 for token in tokens if _is_english_word(token)) / len(tokens)
+
+
+def _actor_login(event: Mapping[str, object]) -> str | None:
+    login = _mapping(event.get("actor")).get("login")
+    if isinstance(login, str) and login.strip():
+        return login.strip()
+    return None
+
+
 def _iter_lines(reader: object) -> Iterator[str]:
     for raw in reader:  # type: ignore[union-attr]
         if isinstance(raw, bytes):
@@ -176,14 +243,23 @@ def ingest(
     output_path: Path,
     max_docs: int = DEFAULT_MAX_DOCS,
     source_family: str = GHARCHIVE_FAMILY,
+    *,
+    exclude_bots: bool = False,
+    min_english_ratio: float | None = None,
 ) -> dict[str, int]:
     """Stream ``source`` and write up to ``max_docs`` documents to JSONL.
 
     Returns counters: ``events_seen``, ``documents_written``,
-    ``skipped_no_body``, ``duplicates``, ``malformed``, ``missing_id``.
+    ``skipped_no_body``, ``skipped_bot``, ``skipped_language``,
+    ``skipped_no_tokens``, ``duplicates``, ``malformed``, ``missing_id``.
+
+    Filter order is extraction, bot filter, language filter, then ID checks
+    and deduplication, so every dropped event lands in exactly one counter.
     """
     if max_docs < 0:
         raise ValueError("max_docs must not be negative")
+    if min_english_ratio is not None and not 0.0 <= min_english_ratio <= 1.0:
+        raise ValueError("min_english_ratio must be between 0 and 1")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,6 +268,9 @@ def ingest(
         "events_seen": 0,
         "documents_written": 0,
         "skipped_no_body": 0,
+        "skipped_bot": 0,
+        "skipped_language": 0,
+        "skipped_no_tokens": 0,
         "duplicates": 0,
         "malformed": 0,
         "missing_id": 0,
@@ -219,6 +298,20 @@ def ingest(
                     counters["skipped_no_body"] += 1
                     continue
 
+                actor = _actor_login(event)
+                if exclude_bots and is_bot_actor(actor):
+                    counters["skipped_bot"] += 1
+                    continue
+
+                if min_english_ratio is not None:
+                    ratio = english_ratio(text)
+                    if ratio is None:
+                        counters["skipped_no_tokens"] += 1
+                        continue
+                    if ratio < min_english_ratio:
+                        counters["skipped_language"] += 1
+                        continue
+
                 event_id = event.get("id")
                 if event_id is None or str(event_id).strip() == "":
                     counters["missing_id"] += 1
@@ -234,6 +327,7 @@ def ingest(
                     "doc_id": doc_id,
                     "source_family": source_family,
                     "repo": _mapping(event.get("repo")).get("name") or None,
+                    "actor": actor,
                     "text": text,
                 }
                 output.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -275,6 +369,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_DOCS,
         help=f"stop after this many documents (default: {DEFAULT_MAX_DOCS})",
     )
+    gharchive.add_argument(
+        "--exclude-bots",
+        action="store_true",
+        help="skip events whose actor login ends with [bot] or is a known bot",
+    )
+    gharchive.add_argument(
+        "--min-english-ratio",
+        type=float,
+        default=None,
+        metavar="R",
+        help="skip documents whose English token share is below R (0..1); off by default",
+    )
     return parser
 
 
@@ -283,8 +389,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.max_docs < 0:
         print("error: --max-docs must not be negative", file=sys.stderr)
         return 2
+    if args.min_english_ratio is not None and not 0.0 <= args.min_english_ratio <= 1.0:
+        print("error: --min-english-ratio must be between 0 and 1", file=sys.stderr)
+        return 2
     try:
-        counters = ingest(args.input, args.output, max_docs=args.max_docs)
+        counters = ingest(
+            args.input,
+            args.output,
+            max_docs=args.max_docs,
+            exclude_bots=args.exclude_bots,
+            min_english_ratio=args.min_english_ratio,
+        )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -295,6 +410,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"events seen:        {counters['events_seen']}")
     print(f"documents written:  {counters['documents_written']}")
     print(f"documents skipped:  {counters['skipped_no_body']} (no body)")
+    if args.exclude_bots:
+        print(f"skipped:            {counters['skipped_bot']} (bot actor)")
+    if args.min_english_ratio is not None:
+        print(f"skipped:            {counters['skipped_language']} (below english ratio)")
+        if counters["skipped_no_tokens"]:
+            print(f"skipped:            {counters['skipped_no_tokens']} (no alphabetic tokens)")
     if counters["duplicates"]:
         print(f"duplicates skipped: {counters['duplicates']}")
     if counters["missing_id"]:
