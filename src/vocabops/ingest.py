@@ -41,8 +41,15 @@ skipped. Two opt-in ingest filters remove automated and non-English text:
     skipped as empty. Off by default (``None``).
 
 Filter order is fixed: event-type/body extraction, then bot filter, then
-language filter, then ID checks and deduplication. Each dropped event is
-counted under exactly one reason.
+language filter, then event-ID checks, then optional exact-text deduplication.
+Each dropped event is counted under exactly one reason.
+
+``--dedup-text``
+    Drop a document whose stripped full text is byte-identical to the text of
+    a document already kept in this run (``sha256`` of the stripped text; the
+    first occurrence in file order wins). Off by default. This is exact
+    duplication only: near-duplicates and templated prose that share a long
+    prefix but differ in the tail are not detected.
 
 Each output line is one document::
 
@@ -246,6 +253,11 @@ def _decoded_lines(binary: object) -> Iterator[str]:
         yield from _iter_lines(buffered)
 
 
+def _text_digest(text: str) -> str:
+    """sha256 of the stripped document text, used for exact-text dedup."""
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+
 def ingest(
     source: str | Path,
     output_path: Path,
@@ -254,15 +266,18 @@ def ingest(
     *,
     exclude_bots: bool = False,
     min_english_ratio: float | None = None,
+    dedup_text: bool = False,
 ) -> dict[str, int]:
     """Stream ``source`` and write up to ``max_docs`` documents to JSONL.
 
     Returns counters: ``events_seen``, ``documents_written``,
     ``skipped_no_body``, ``skipped_bot``, ``skipped_language``,
-    ``skipped_no_tokens``, ``duplicates``, ``malformed``, ``missing_id``.
+    ``skipped_no_tokens``, ``skipped_duplicate_text``, ``duplicates``,
+    ``malformed``, ``missing_id``.
 
-    Filter order is extraction, bot filter, language filter, then ID checks
-    and deduplication, so every dropped event lands in exactly one counter.
+    Filter order is extraction, bot filter, language filter, event-ID checks,
+    then optional exact-text deduplication, so every dropped event lands in
+    exactly one counter.
     """
     if max_docs < 0:
         raise ValueError("max_docs must not be negative")
@@ -279,11 +294,13 @@ def ingest(
         "skipped_bot": 0,
         "skipped_language": 0,
         "skipped_no_tokens": 0,
+        "skipped_duplicate_text": 0,
         "duplicates": 0,
         "malformed": 0,
         "missing_id": 0,
     }
     seen: set[str] = set()
+    seen_text: set[str] = set()
 
     with output_path.open("w", encoding="utf-8", newline="\n") as output:
         if max_docs == 0:
@@ -330,6 +347,13 @@ def ingest(
                     counters["duplicates"] += 1
                     continue
                 seen.add(doc_id)
+
+                if dedup_text:
+                    digest = _text_digest(text)
+                    if digest in seen_text:
+                        counters["skipped_duplicate_text"] += 1
+                        continue
+                    seen_text.add(digest)
 
                 record = {
                     "doc_id": doc_id,
@@ -389,6 +413,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="R",
         help="skip documents whose English token share is below R (0..1); off by default",
     )
+    gharchive.add_argument(
+        "--dedup-text",
+        action="store_true",
+        help="skip documents whose full text exactly matches an already-kept document",
+    )
     return parser
 
 
@@ -407,6 +436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_docs=args.max_docs,
             exclude_bots=args.exclude_bots,
             min_english_ratio=args.min_english_ratio,
+            dedup_text=args.dedup_text,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -424,6 +454,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"skipped:            {counters['skipped_language']} (below english ratio)")
         if counters["skipped_no_tokens"]:
             print(f"skipped:            {counters['skipped_no_tokens']} (no alphabetic tokens)")
+    if args.dedup_text:
+        print(f"skipped:            {counters['skipped_duplicate_text']} (duplicate text)")
     if counters["duplicates"]:
         print(f"duplicates skipped: {counters['duplicates']}")
     if counters["missing_id"]:

@@ -240,3 +240,91 @@ def test_cli_rejects_negative_max_docs(tmp_path, capsys):
 
     assert exit_code == 2
     assert "--max-docs" in capsys.readouterr().err
+
+
+DEDUP_BODY = "Retry logic should persist jobs before responding."
+
+
+def _text_event(event_id, body):
+    return {
+        "id": str(event_id),
+        "type": "IssueCommentEvent",
+        "repo": {"name": "acme/widgets"},
+        "payload": {"comment": {"body": body}},
+    }
+
+
+def test_exact_text_duplicates_are_kept_without_the_flag(tmp_path):
+    source = _write_events(
+        tmp_path / "events.json",
+        [_text_event(2001, DEDUP_BODY), _text_event(2002, DEDUP_BODY)],
+    )
+    output = tmp_path / "documents.jsonl"
+
+    counters = ingest(source, output, max_docs=10)
+
+    assert counters["documents_written"] == 2
+    assert counters["skipped_duplicate_text"] == 0
+    assert [doc["doc_id"] for doc in _read_jsonl(output)] == [
+        document_id("gharchive", "2001"),
+        document_id("gharchive", "2002"),
+    ]
+
+
+def test_dedup_text_drops_identical_text_and_keeps_the_first(tmp_path):
+    source = _write_events(
+        tmp_path / "events.json",
+        [_text_event(2001, DEDUP_BODY), _text_event(2002, DEDUP_BODY)],
+    )
+    output = tmp_path / "documents.jsonl"
+
+    counters = ingest(source, output, max_docs=10, dedup_text=True)
+
+    assert counters["documents_written"] == 1
+    assert counters["skipped_duplicate_text"] == 1
+    assert counters["duplicates"] == 0  # different event IDs
+    documents = _read_jsonl(output)
+    assert [doc["doc_id"] for doc in documents] == [document_id("gharchive", "2001")]
+    assert documents[0]["text"] == DEDUP_BODY
+
+
+def test_dedup_text_keeps_texts_that_differ_by_one_word(tmp_path):
+    source = _write_events(
+        tmp_path / "events.json",
+        [
+            _text_event(2001, DEDUP_BODY),
+            _text_event(2002, "Retry logic should persist jobs before retrying."),
+        ],
+    )
+    output = tmp_path / "documents.jsonl"
+
+    counters = ingest(source, output, max_docs=10, dedup_text=True)
+
+    assert counters["documents_written"] == 2
+    assert counters["skipped_duplicate_text"] == 0
+
+
+def test_cli_reports_duplicate_text_skips(tmp_path, capsys):
+    source = _write_events(
+        tmp_path / "events.json",
+        [_text_event(2001, DEDUP_BODY), _text_event(2002, DEDUP_BODY)],
+    )
+    output = tmp_path / "documents.jsonl"
+
+    exit_code = main(
+        [
+            "gharchive",
+            "--input",
+            str(source),
+            "--output",
+            str(output),
+            "--max-docs",
+            "10",
+            "--dedup-text",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "documents written:  1" in out
+    assert "skipped:            1 (duplicate text)" in out
