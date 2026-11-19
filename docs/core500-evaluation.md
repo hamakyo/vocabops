@@ -1547,3 +1547,113 @@ normalization and an attested set built from the combined corpus.
 The measurement changes no pipeline score, rebuilds no view, and starts no
 corpus work; the implementation is a later round. Full tables and per-method
 top-20 lists: [ranking-evaluation.md](ranking-evaluation.md).
+
+# Part 10 — Borda implementation, the fused ranking and views v3
+
+**Status: implementation and rebuilt views; no release.** Part 9 recommended
+Borda fusion subject to equalizing the absent-term penalty. That correction was
+measured in the addendum of
+[ranking-evaluation.md](ranking-evaluation.md#addendum--the-absence-penalty-correction-measured-and-implemented):
+percentile Borda (E2) was chosen. This part records the pipeline change, the
+fused ranking and the views rebuilt on it. Pooled scoring, the lemmatizer, the
+tokenizer, the floors and the corpus are unchanged.
+
+## Implementation
+
+`python -m vocabops.pipeline` now takes `--ranking-method {pooled,borda}`
+(default `pooled`). `borda` groups documents by `source_family`, computes each
+source's `tf`/`df` and its own `df >= min_df` specificity ranking, and fuses
+them with E2: per-source contribution `rank / listed` for a listed term and
+`1.0` for an absent one, summed, lower is better. The score column holds that
+fused sum — not `se_specificity` — and the manifest says so, along with
+`ranking_method`, `borda_variant` and each source's documents/tokens/listed
+counts. A single source family is an error, not a silent fallback to pooled.
+
+Pooled mode is byte-identical to the previous outputs: `diff -r` against
+`out/gharchive-rank-day-v6-df10` and `out/combined-rank-v1-df10` both exit 0.
+The fused run is byte-identical on rerun. 148 tests pass (138 pre-existing plus
+ten for the new path).
+
+## The fused ranking
+
+`out/combined-rank-v2-borda`: 9,463 rows, the same `df >= 10` term set as the
+pooled ranking. Its ordering and rounded scores reproduce the evaluation's E2
+rows exactly. Top 20: `base64`, `dtype`, `substr`, `typeerror`, `valueerror`,
+`serializer`, `deserialize`, `paginate`, `traceback`, `oauth2`, `util`,
+`datasource`, `datetime`, `float32`, `json`, `sha256`, `serialize`, `numpy`,
+`stdout`, `stderr`.
+
+| term | M0 pooled | raw M3 | **E2 fused** |
+| --- | ---: | ---: | ---: |
+| `retrieve` | 2,878 | 802 | **511** |
+| `persist` | 2,983 | 459 | **437** |
+| `invoke` | 2,555 | 305 | **246** |
+| `propagate` | 3,650 | 686 | **561** |
+| `reproduce` | 2,480 | 878 | **1,335** |
+| `invalidate` | 3,195 | 527 | **460** |
+| `fallback` | 905 | 109 | **122** |
+| `underlying` | 5,744 | 3,082 | **1,698** |
+| **median** | 2,930.5 | 606.5 | **485.5** |
+| **in top 500** | 0 | 3 | **4** |
+
+The correction improves the median again (606.5 → 485.5) and adds `invalidate`
+to the top 500, but costs `reproduce` (878 → 1,335) and `fallback`
+(109 → 122). It is not a strict improvement over raw M3 on every target.
+
+| artifact | M0 | raw M3 | E2 fused |
+| --- | ---: | ---: | ---: |
+| `param` | 1 | 31 | 25 |
+| `rtype` | 4 | 5,844 | 1,991 |
+| `ioexception` | 3 | 1,005 | 475 |
+| `getelementbyid` | 6 | 2,491 | 1,987 |
+| `kwarg` | 8 | 1,008 | 481 |
+| `dataframe` | 5 | 1,003 | 479 |
+
+All six artifacts are far below the pooled head, but the two-source artifacts
+lost 2–3x of raw M3's suppression (`rtype` 5,844 → 1,991, `ioexception`
+1,005 → 475) and `param` sits 25th. Top-100 character: 29 (a), 25 (c), 41 (b),
+1 (d), 4 unclassified — 54 (a)+(c) against pooled's 15. Top-100 source
+presence is 0 / 0 / 100 (one / two / three sources). Top-100 overlap with the
+pooled ranking is **12 terms**.
+
+## Views v3
+
+`scripts/classify_fused.py` classifies the fused ranking in rank order. It
+reuses v6 (353 rows) then v5 (1 row) then v3 buckets; the remaining 606 terms
+were reviewed with the same five buckets and the rules stated in the script.
+Scanning stops when a + c reaches 500, at **rank 960** (cap 1,600):
+**960 rows — a 349, b 402, c 151, d 58, e 0**. `scripts/build_views.py`
+regenerates both views byte-identically (verified with `cmp`).
+
+`data/core500-vocab-v3.jsonl` — 500 rows: **(a) 349 (69.8%), (c) 151 (30.2%)**,
+against v2's 340 / 160. Depth is 960 (v2 1,002). Only **191 terms are shared;
+309 are new and 309 dropped** — the fused ranking's vocabulary is substantially
+different from the GH-reviewed one.
+
+`data/core500-technical-v3.jsonl` — 300 rows, bucket (b), covering ranks 1–775
+(v2: 1–683). 83 terms are shared with v2 and 217 are new.
+
+Target view-ranks in the vocabulary view (v2 → v3): `fallback` **71** (67),
+`invoke` **153** (—), `persist` **268** (—), `invalidate` **280** (—),
+`retrieve` **302** (—), `propagate` **322** (—). `reproduce` is no longer in the
+view (v2 #311) and `underlying` is in neither. Six of eight targets now fall
+inside 500 rows, against two in v2 — the same effect the fused ranking shows,
+now visible in the view.
+
+## What the views are now
+
+The vocabulary view is more useful on the target words and less useful as a
+clean English list. 101 of its 500 rows are bucket (c) abbreviations, including
+`req`, `cfg`, `tmp`, `md5`, `xml`, `aws`; the fused head is an
+API/type glossary first (`base64`, `dtype`, `substr`, `typeerror`, `oauth2`,
+`sha256`) and a software-English list second. The 309-term turnover and the
+`c`-heavy composition are the same fact seen twice: fusion fixed source bias
+and preserved cross-source targets, but it did not turn API vocabulary into
+prose vocabulary.
+
+**Verdict.** The implementation is correct, pooled output is untouched, and
+the fused ranking is a real improvement on targets and on view depth. Views v3
+are a review artifact, not a release: Phase 2's exit condition is still not
+met, because the 500-term vocabulary view now leads with type names and
+abbreviations. Roadmap: the only line that changed is the ranking-methods line,
+which now records the adopted method; no other item moves.

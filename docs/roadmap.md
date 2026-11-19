@@ -65,7 +65,7 @@ One command or workflow can reproduce a candidate vocabulary ranking from fixed 
 
 Goal: turn the corpus ranking into the first useful software-engineering vocabulary dataset.
 
-- [x] evaluate candidate ranking methods — six methods measured offline on the three-source corpus; [ranking-evaluation.md](ranking-evaluation.md) recommends Borda fusion (target median rank 606.5 vs 2,930.5 pooled, 3 targets in the top 500 vs 0), with the asymmetric absent-term penalty to be equalized before implementation.
+- [x] evaluate candidate ranking methods — six methods measured offline on the three-source corpus; [ranking-evaluation.md](ranking-evaluation.md) recommends Borda fusion (target median rank 606.5 vs 2,930.5 pooled, 3 targets in the top 500 vs 0), with the asymmetric absent-term penalty to be equalized before implementation. Implemented: the pipeline's `--ranking-method borda` uses the percentile variant (absence penalty equalized; target median 485.5, 4 targets in the top 500), and views v3 are built on the fused ranking.
 - [x] define minimum frequency/document-frequency thresholds
 - [ ] detect and down-rank boilerplate and obvious low-value terms
 - [x] review high-ranking technical nouns separately from transferable English vocabulary — done via the two views and [Part 4](core500-evaluation.md#part-4--vocabulary-and-technical-views); the split is a review, not a rule.

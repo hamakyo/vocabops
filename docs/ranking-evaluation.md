@@ -1,6 +1,10 @@
 # Ranking evaluation — candidate methods for the three-source corpus
 
-**Status: offline measurement and a recommendation. No pipeline change.**
+**Status: implemented.** The measurement below recommended Borda fusion subject
+to an absence-penalty correction. The correction was measured in the addendum
+at the end of this document, the percentile variant was chosen, and
+`--ranking-method borda` now produces `out/combined-rank-v2-borda`. The
+recommendation section is marked accordingly; the measurement text is unchanged.
 Part 8 of [core500-evaluation.md](core500-evaluation.md#part-8--combined-corpus-and-source-bias)
 measured the negative result: concatenating GH Archive, Stack Overflow and
 CodeSearchNet produces a combined top 100 that is an API signature directory
@@ -287,6 +291,9 @@ at rank 2 differ by one point, even when the scores differ by five nats.
 **Adopt M3 (Borda fusion) as the ranking basis for the next round, subject to
 one correction before it is used to build a view.**
 
+*Implemented: the correction was measured (E1/E2) and E2 percentile Borda was
+adopted; see the addendum. The reasoning below is the Round 15 text.*
+
 Reasoning, in the order the metrics were fixed:
 
 - Targets: the only method with targets in the top 500 (3) and the best median
@@ -333,7 +340,9 @@ this round.
 The evaluation step aborts with exit code 3 if the pooled counts fail the
 combined-ranking check. The fusion functions live in
 `src/vocabops/fusion.py` and are unit-tested on synthetic tables in
-`tests/test_fusion.py`; nothing in `pipeline.py` changed.
+`tests/test_fusion.py`. `scripts/evaluate_rankings.py` now also scores E1 and
+E2 (the addendum's table); `--ranking-method borda` in the pipeline uses the
+chosen E2 variant.
 
 ## Limits
 
@@ -346,5 +355,82 @@ combined-ranking check. The fusion functions live in
 - The classification files cover GH ranking positions, not this corpus. The
   3 unclassified terms in Borda's top 100 and 58 in M0's are counted, not
   guessed.
-- This document is a decision, not an implementation. No view was rebuilt, no
-  threshold was changed, and no corpus work was done.
+- This document's measurement was a decision. The implementation, the fused
+  ranking and the rebuilt views are recorded in the addendum below and in
+  [core500-evaluation.md](core500-evaluation.md) Part 10.
+
+## Addendum — the absence-penalty correction, measured and implemented
+
+Round 15 required equalizing the absent-term penalty before Borda could be
+used. Two variants were added to `scripts/evaluate_rankings.py` and scored on
+the same fixed metrics, from the same per-source counts
+(`out/ranking-eval/source-counts.json`), against raw M3:
+
+- **E1 common penalty** — absence costs `max(listed) + 1` in every source.
+  With listed counts 6,138 / 5,166 / 2,526 the penalty is **6,139** everywhere.
+- **E2 percentile Borda** — a listed term contributes `rank / listed` in that
+  source; an absent term contributes **1.0**. The three contributions are
+  summed, lower is better.
+
+| metric | raw M3 | E1 common penalty | E2 percentile |
+| --- | ---: | ---: | ---: |
+| rows | 9,463 | 9,463 | 9,463 |
+| target median | 606.5 | **502.0** | **485.5** |
+| targets in top 500 | 3 | **4** | **4** |
+| view recovery, top 500 | 168 | 149 | 150 |
+| view recovery, top 1,020 | 219 | 170 | **198** |
+| `param` | 31 | **31** | 25 |
+| `rtype` / `ioexception` / `getelementbyid` | 5,844 / 1,005 / 2,491 | **2,676 / 780 / 2,673** | 1,991 / 475 / 1,987 |
+| `kwarg` / `dataframe` | 1,008 / 1,003 | **783 / 779** | 481 / 479 |
+| top-100 (a)+(c) | 55 | 55 | 54 |
+| top-100 unclassified | 3 | 3 | 4 |
+
+Per-target ranks (raw M3 → E1 → E2): `retrieve` 802 → 635 → **511**,
+`persist` 459 → **392** → 437, `invoke` 305 → 273 → **246**, `propagate`
+686 → **561** → **561**, `reproduce` 878 → 1,771 → **1,335**, `invalidate`
+527 → **443** → 460, `fallback` 109 → **109** → 122, `underlying`
+3,082 → **1,676** → 1,698.
+
+**Neither variant meets the literal bar "does not degrade targets or view
+recovery versus raw M3".** Targets improve under both (median 606.5 → 502.0 /
+485.5; four in the top 500 instead of three), but GH-vocabulary recovery falls
+(168 → 149 / 150 at 500; 219 → 170 / 198 at 1,020). That is not an accident:
+raw M3's penalty arithmetic is kindest to GH-listed terms, and view recovery is
+explicitly a GH-survival measure (see *Limits*), so removing the GH preference
+must lower it. The rule can only be met by keeping the defect it was written to
+remove.
+
+**Chosen: E2 percentile Borda.** Against E1 it wins the target median
+(485.5 vs 502.0), the same four top-500 targets, view recovery at 1,020
+(198 vs 170) and at 500 (150 vs 149), `retrieve` (511 vs 635), `reproduce`
+(1,335 vs 1,771), and top-100 (a)+(c) is within one row (54 vs 55). E1 is
+better on every artifact — `param` 31 vs 25, and `rtype` 2,676 vs 1,991,
+`ioexception` 780 vs 475, `getelementbyid` 2,673 vs 1,987, `kwarg` 783 vs 481,
+`dataframe` 779 vs 479 — because its uniform 6,139-point penalty pushes
+API-jargon terms further down. E2 nevertheless leads every target metric and
+both recovery depths, and it is scale-free, which is the stated tiebreak. It is
+implemented as `BORDA_VARIANT = "percentile"` in `src/vocabops/pipeline.py`.
+
+Residual asymmetry, stated plainly: E2 equalizes *absence*, not head
+granularity. Rank 1 of GH's 6,138-term list contributes 1/6,138 = 0.00016,
+while rank 1 of CodeSearchNet's 2,526-term list contributes 0.00040 — a longer
+list still gives its top terms slightly more weight. This is inherent to
+`rank / listed` as specified, and it is much smaller than E1's fixed 6,139-point
+difference.
+
+Implementation and regression:
+
+- `--ranking-method {pooled,borda}` (default `pooled`). `borda` groups input
+  documents by `source_family`, computes each source's counts and its own
+  `df >= min_df` specificity ranking, and fuses with E2. The score column holds
+  the fused sum (lower is better), not `se_specificity`; the manifest records
+  `ranking_method`, `borda_variant`, `score_semantics` and each source's
+  documents/tokens/listed counts.
+- Borda mode fails on a single source family or a missing `source_family`
+  rather than falling back to pooled.
+- Pooled mode is unchanged: GH day corpus output is byte-identical to
+  `out/gharchive-rank-day-v6-df10`, and combined output to
+  `out/combined-rank-v1-df10` (both verified with `diff -r`).
+- The fused ranking is `out/combined-rank-v2-borda` (9,463 rows; rerun
+  byte-identical). It reproduces the evaluation's E2 ordering and rounded scores
+  exactly. Top-100 overlap with pooled M0 is **12 terms**.
