@@ -22,6 +22,8 @@ accepted only when ``wordfreq`` knows it as an English word. See
 from __future__ import annotations
 
 import re
+from collections import Counter
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
 from wordfreq import word_frequency
@@ -30,9 +32,12 @@ __all__ = [
     "STOPWORDS",
     "IRREGULAR_LEMMAS",
     "LEMMA_MIN_FREQUENCY",
+    "ATTESTATION_MIN_DOCUMENTS",
     "clean_text",
     "tokenize",
+    "attested_headwords",
     "lemmatize",
+    "normalize_tokens",
     "normalize",
 ]
 
@@ -178,6 +183,42 @@ _VOWELS = frozenset("aeiou")
 # suffix rules have no guard against them (see docs/prototype.md).
 LEMMA_MIN_FREQUENCY = 3e-07
 
+# How many documents must contain a raw form before the corpus itself counts as
+# evidence that the form is a real headword of this domain.
+#
+# The wordfreq floor is a general-English judgement and it fails technical
+# headwords that the corpus uses all the time: ``rebase`` is wordfreq 6.46e-08,
+# ``dedup`` and ``dedupe`` are 0.0. Their inflections therefore never validate,
+# even though the headword is a ranking row attested across the corpus (the Core
+# 500 review found ``rebase``/``rebased``/``rebases`` as three rows for one
+# lemma). Three documents is the smallest count that is still corpus evidence
+# rather than one author's repetition: the day corpus is 17,390 documents, so a
+# form in three of them is a shared term, not a typo or a template artefact.
+# Attestation only admits a candidate the suffix rules already propose, so it
+# cannot invent a lemma; it can only let an existing candidate win where no
+# wordfreq-valid candidate exists.
+ATTESTATION_MIN_DOCUMENTS = 3
+
+
+def attested_headwords(
+    token_documents: Iterable[Sequence[str]],
+    min_documents: int = ATTESTATION_MIN_DOCUMENTS,
+) -> frozenset[str]:
+    """Raw forms that occur standalone in at least ``min_documents`` documents.
+
+    ``token_documents`` holds the raw tokens of each document (the output of
+    :func:`tokenize`, before lemmatization). A form counts once per document, so
+    repetition inside one document cannot attest itself. The result is a set, so
+    document order and iteration order cannot change it: the same corpus yields
+    the same attested set and therefore byte-identical output.
+    """
+    document_counts: Counter[str] = Counter()
+    for tokens in token_documents:
+        document_counts.update(set(tokens))
+    return frozenset(
+        form for form, count in document_counts.items() if count >= min_documents
+    )
+
 
 def clean_text(text: str) -> str:
     """Strip code, markup and URLs, then lowercase.
@@ -291,15 +332,23 @@ def _derived_candidates(token: str) -> set[str]:
 
 
 @lru_cache(maxsize=None)
-def lemmatize(token: str) -> str:
-    """Reduce an inflected English word to a dictionary-validated lemma.
+def lemmatize(token: str, attested: frozenset[str] = frozenset()) -> str:
+    """Reduce an inflected English word to a validated lemma.
 
     Order of operations: irregular map, candidate generation from the suffix
-    rules, then validation against ``wordfreq``. A candidate is accepted only
-    when its English frequency is at least :data:`LEMMA_MIN_FREQUENCY`; among
-    accepted candidates the most frequent wins. If no candidate survives, the
-    original token is returned, because a real inflected word is always a
-    safer answer than an invented stem.
+    rules, then validation. A candidate is accepted when its English frequency
+    is at least :data:`LEMMA_MIN_FREQUENCY`, or when the corpus attests it (it
+    occurs standalone in at least :data:`ATTESTATION_MIN_DOCUMENTS` documents,
+    passed in as ``attested``). Among accepted candidates the most frequent
+    wins, so a wordfreq-valid candidate always beats an attested-only one with
+    lower frequency; attestation only decides when no wordfreq-valid candidate
+    exists. If no candidate survives, the original token is returned, because a
+    real inflected word is always a safer answer than an invented stem.
+
+    ``attested`` defaults to the empty set, which reproduces the pure
+    single-token behaviour for callers without a corpus: the corpus pre-pass is
+    opt-in and cannot change a result unless a candidate is both attested and
+    not wordfreq-valid.
 
     The original token is never compared against the candidates: an inflected
     form can be more frequent than its lemma (``required`` 1.05e-04 vs
@@ -315,25 +364,29 @@ def lemmatize(token: str) -> str:
         return token
 
     best: str | None = None
-    best_frequency = 0.0
+    best_frequency = -1.0
     for candidate in sorted(_derived_candidates(token)):
         frequency = _frequency(candidate)
-        if frequency >= LEMMA_MIN_FREQUENCY and frequency > best_frequency:
-            best = candidate
-            best_frequency = frequency
+        if frequency >= LEMMA_MIN_FREQUENCY or candidate in attested:
+            if frequency > best_frequency:
+                best = candidate
+                best_frequency = frequency
     return best if best is not None else token
 
 
-def normalize(text: str, remove_stopwords: bool = True) -> list[str]:
-    """Full normalization pipeline for one document.
+def normalize_tokens(
+    tokens: Iterable[str],
+    remove_stopwords: bool = True,
+    attested: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Lemmatize raw tokens, optionally dropping stopwords.
 
-    Returns the ordered list of lemma tokens. Stopword removal checks both the
-    raw token and the lemma: the raw check catches stopwords such as
-    "anything"/"during" whose heuristic lemma would otherwise survive, and the
-    lemma check catches inflected forms such as "being" -> "be".
+    Split out from :func:`normalize` so the pipeline can tokenize once, build
+    the attested set from those raw tokens, and then lemmatize the same tokens
+    with corpus evidence.
     """
-    tokens = tokenize(clean_text(text))
-    lemmas = [lemmatize(token) for token in tokens]
+    tokens = list(tokens)
+    lemmas = [lemmatize(token, attested) for token in tokens]
     if remove_stopwords:
         lemmas = [
             lemma
@@ -341,3 +394,23 @@ def normalize(text: str, remove_stopwords: bool = True) -> list[str]:
             if token not in STOPWORDS and lemma not in STOPWORDS
         ]
     return lemmas
+
+
+def normalize(
+    text: str,
+    remove_stopwords: bool = True,
+    attested: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Full normalization pipeline for one document.
+
+    Returns the ordered list of lemma tokens. Stopword removal checks both the
+    raw token and the lemma: the raw check catches stopwords such as
+    "anything"/"during" whose heuristic lemma would otherwise survive, and the
+    lemma check catches inflected forms such as "being" -> "be".
+
+    ``attested`` carries corpus evidence from :func:`attested_headwords`; it
+    defaults to the empty set, so the pure single-document behaviour is
+    unchanged for callers that have no corpus.
+    """
+    tokens = tokenize(clean_text(text))
+    return normalize_tokens(tokens, remove_stopwords=remove_stopwords, attested=attested)

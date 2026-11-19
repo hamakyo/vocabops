@@ -29,12 +29,21 @@ derived from the distinct source families actually present in the input.
 documents from ``ranking.json`` and ``ranking.csv``. Frequencies and scores
 are still computed over the whole corpus; only the emitted rows are filtered.
 
+Before lemmatizing, the pipeline tokenizes every document and counts in how
+many documents each raw form occurs. Forms in at least
+``ATTESTATION_MIN_DOCUMENTS`` (3) documents are corpus-attested headwords, and
+the lemmatizer may accept an attested candidate that wordfreq places below the
+lemma floor (``rebase`` 6.46e-08, ``dedup`` 0.0). The pre-pass reads documents
+in the same fixed order as everything else and uses only set membership, so it
+cannot change output for the same input.
+
 Outputs (written to the output directory):
 
 - ``ranking.json`` — list of term rows, sorted by ``se_specificity`` desc then
   term asc
 - ``ranking.csv`` — the same rows as CSV
-- ``manifest.json`` — snapshot metadata and corpus counts
+- ``manifest.json`` — snapshot metadata and corpus counts, plus
+  ``attestation_min_documents`` and the number of ``attested_forms``
 
 The pipeline writes no timestamps, so repeated runs on the same inputs produce
 byte-identical files.
@@ -51,7 +60,14 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
-from .normalize import normalize
+from .normalize import (
+    ATTESTATION_MIN_DOCUMENTS,
+    attested_headwords,
+    clean_text,
+    normalize,
+    normalize_tokens,
+    tokenize,
+)
 from .stats import ALPHA, rank_terms
 
 __all__ = [
@@ -78,27 +94,44 @@ def document_id(source_family: str, relative_path: str) -> str:
     return digest.hexdigest()
 
 
+def _read_txt_documents(
+    input_dir: Path, source_family: str = SOURCE_FAMILY
+) -> list[tuple[str, str, str]]:
+    """Read every ``.txt`` file in ``input_dir`` as one raw document.
+
+    Returns ``(document_id, relative_path, text)`` tuples in sorted path order
+    so the corpus is independent of filesystem iteration order.
+    """
+    paths = sorted(path for path in input_dir.glob("*.txt") if path.is_file())
+    return [
+        (
+            document_id(source_family, path.relative_to(input_dir).as_posix()),
+            path.relative_to(input_dir).as_posix(),
+            path.read_text(encoding="utf-8"),
+        )
+        for path in paths
+    ]
+
+
 def load_documents(
     input_dir: Path, source_family: str = SOURCE_FAMILY
 ) -> list[tuple[str, str, list[str]]]:
     """Read every ``.txt`` file in ``input_dir`` as one normalized document.
 
     Returns ``(document_id, relative_path, lemmas)`` tuples in sorted path
-    order so the corpus is independent of filesystem iteration order.
+    order. This is the corpus-free normalization path (no attested set); the
+    pipeline's own run builds the attested set first and normalizes from it.
     """
-    paths = sorted(path for path in input_dir.glob("*.txt") if path.is_file())
-    documents = []
-    for path in paths:
-        relative_path = path.relative_to(input_dir).as_posix()
-        lemmas = normalize(path.read_text(encoding="utf-8"))
-        documents.append(
-            (document_id(source_family, relative_path), relative_path, lemmas)
+    return [
+        (doc_id, relative_path, normalize(text))
+        for doc_id, relative_path, text in _read_txt_documents(
+            input_dir, source_family
         )
-    return documents
+    ]
 
 
-def load_jsonl_documents(path: Path) -> list[tuple[str, str, list[str]]]:
-    """Read a JSONL document file as ``(document_id, source_family, lemmas)``.
+def _read_jsonl_documents(path: Path) -> list[tuple[str, str, str]]:
+    """Read a JSONL document file as ``(document_id, source_family, text)``.
 
     Each line must be a JSON object with a non-empty string ``text`` and
     ``source_family``. ``doc_id`` is reused when present, otherwise a stable ID
@@ -108,7 +141,7 @@ def load_jsonl_documents(path: Path) -> list[tuple[str, str, list[str]]]:
     Blank lines are ignored; anything else that fails to parse is an error
     naming the line number.
     """
-    documents: list[tuple[str, str, list[str]]] = []
+    documents: list[tuple[str, str, str]] = []
     with Path(path).open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
@@ -133,18 +166,32 @@ def load_jsonl_documents(path: Path) -> list[tuple[str, str, list[str]]]:
             doc_id = record.get("doc_id")
             if not isinstance(doc_id, str) or not doc_id.strip():
                 doc_id = document_id(family, f"line/{line_number}")
-            documents.append((doc_id.strip(), family, normalize(text)))
+            documents.append((doc_id.strip(), family, text))
     return documents
 
 
-def _load_documents(path: Path) -> list[tuple[str, str, list[str]]]:
-    """Load either a ``.txt`` directory or a ``.jsonl`` document file."""
+def load_jsonl_documents(path: Path) -> list[tuple[str, str, list[str]]]:
+    """Read a JSONL document file as ``(document_id, source_family, lemmas)``.
+
+    The corpus-free normalization path, kept for callers that want the plain
+    single-document behavior; :func:`run` normalizes from the attested set.
+    """
+    return [
+        (doc_id, family, normalize(text))
+        for doc_id, family, text in _read_jsonl_documents(path)
+    ]
+
+
+def _load_document_texts(path: Path) -> list[tuple[str, str, str]]:
+    """Load either a ``.txt`` directory or a ``.jsonl`` document file as text."""
     if path.is_dir():
-        records = load_documents(path)
-        return [(doc_id, SOURCE_FAMILY, lemmas) for doc_id, _, lemmas in records]
+        return [
+            (doc_id, SOURCE_FAMILY, text)
+            for doc_id, _, text in _read_txt_documents(path)
+        ]
     if path.is_file():
         if path.suffix.lower() == ".jsonl":
-            return load_jsonl_documents(path)
+            return _read_jsonl_documents(path)
         raise ValueError(
             f"unsupported input file {path}: expected a directory of .txt "
             "documents or a .jsonl file"
@@ -165,9 +212,24 @@ def run(
     if min_df < 1:
         raise ValueError("min_df must be at least 1")
 
-    documents = _load_documents(input_path)
-    if not documents:
+    records = _load_document_texts(input_path)
+    if not records:
         raise ValueError(f"no documents found in {input_path}")
+
+    # Corpus-attested headwords, computed before lemmatization so that a
+    # candidate the suffix rules propose can be validated by the corpus itself
+    # when wordfreq is below the lemma floor (``rebase`` 6.46e-08, ``dedup``
+    # 0.0). The pass is deterministic: documents are read in a fixed order, the
+    # attested set is a set built from document-frequency counts, and no
+    # threshold depends on the set's contents.
+    token_documents = [
+        tokenize(clean_text(text)) for _, _, text in records
+    ]
+    attested = attested_headwords(token_documents)
+    documents = [
+        (doc_id, family, normalize_tokens(tokens, attested=attested))
+        for (doc_id, family, _), tokens in zip(records, token_documents)
+    ]
 
     rows = rank_terms(
         [lemmas for _, _, lemmas in documents], alpha=alpha, min_df=min_df
@@ -190,6 +252,8 @@ def run(
         "documents": len(documents),
         "tokens": sum(len(lemmas) for _, _, lemmas in documents),
         "min_df": min_df,
+        "attestation_min_documents": ATTESTATION_MIN_DOCUMENTS,
+        "attested_forms": len(attested),
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
