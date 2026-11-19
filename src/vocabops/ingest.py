@@ -586,6 +586,35 @@ def _text_digest_bytes(text: str) -> bytes:
     return hashlib.blake2b(text.strip().encode("utf-8"), digest_size=16).digest()
 
 
+def _passes_gates(
+    text: str,
+    counters: dict[str, int],
+    min_chars: int,
+    min_english_ratio: float,
+) -> bool:
+    """Apply the empty, length and English-ratio gates in fixed order.
+
+    Each rejection increments exactly one counter. Shared by the sequential
+    adapter path and the parallel real-run harness so both see the same gates.
+    """
+    text = text.strip()
+    if not text:
+        counters["skipped_empty"] += 1
+        return False
+    if len(text) < min_chars:
+        counters["skipped_too_short"] += 1
+        return False
+
+    ratio = english_ratio(text)
+    if ratio is None:
+        counters["skipped_no_tokens"] += 1
+        return False
+    if ratio < min_english_ratio:
+        counters["skipped_language"] += 1
+        return False
+    return True
+
+
 def _sample_to_jsonl(
     records: Iterable[dict[str, object]],
     output_path: Path,
@@ -605,19 +634,7 @@ def _sample_to_jsonl(
     try:
         for record in records:
             text = str(record.get("text") or "").strip()
-            if not text:
-                counters["skipped_empty"] += 1
-                continue
-            if len(text) < min_chars:
-                counters["skipped_too_short"] += 1
-                continue
-
-            ratio = english_ratio(text)
-            if ratio is None:
-                counters["skipped_no_tokens"] += 1
-                continue
-            if ratio < min_english_ratio:
-                counters["skipped_language"] += 1
+            if not _passes_gates(text, counters, min_chars, min_english_ratio):
                 continue
 
             if dedup.seen(_text_digest_bytes(text)):
