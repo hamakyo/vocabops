@@ -1,6 +1,6 @@
 # VocabOps Web — Learning MVP
 
-Minimal, mobile-first daily learning UI backed by FSRS (`ts-fsrs`) and the shared VocabOps vocabulary schema (`data/releases/0.1.0-draft/vocabulary.json` and `data/sample.json`).
+Minimal, mobile-first Japanese daily learning UI built with React, TypeScript, Tailwind CSS v4 (shadcn/ui-style primitives + `lucide-react`), FSRS (`ts-fsrs`), and the shared VocabOps vocabulary schema (`data/releases/0.1.0-draft/vocabulary.json` and `data/sample.json`).
 
 ## Features
 
