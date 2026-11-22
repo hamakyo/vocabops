@@ -13,3 +13,4 @@ Thin, reproducible runner notebooks for running heavy VocabOps stages on Google 
 | Notebook | Stage | CLI invoked | Colab |
 | --- | --- | --- | --- |
 | [`colab_pos_collocations.ipynb`](colab_pos_collocations.ipynb) | GPU POS-aware lemmatization & dependency-based collocation extraction | `python -m vocabops.enrich` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamakyo/vocabops/blob/main/notebooks/colab_pos_collocations.ipynb) |
+| [`colab_draft_curation.ipynb`](colab_draft_curation.ipynb) | GPU open-model Japanese gloss, example & cloze draft curation | `python -m vocabops.draft_curation` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamakyo/vocabops/blob/main/notebooks/colab_draft_curation.ipynb) |
