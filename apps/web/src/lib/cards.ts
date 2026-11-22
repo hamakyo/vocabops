@@ -1,3 +1,4 @@
+import { formatPosJa } from "./labels";
 import type { StudyMode, VocabularyTerm } from "./schema";
 
 export interface CardPresentation {
@@ -55,23 +56,22 @@ export function buildCardPresentation(
       return {
         effectiveMode: "cloze",
         fallbackFromCloze: false,
-        promptLabel: "Cloze — 空欄に入る英単語を想起",
+        promptLabel: "穴埋め — 空欄に入る英単語を思い出す",
         promptPrimary: cloze.prompt,
         promptSecondary: ex0?.ja ?? term.ja.software_gloss ?? term.ja.gloss,
         expectedAnswers: Array.from(
           new Set([cloze.answer, term.term, term.lemma, ...term.forms]),
         ),
         answerPrimary: cloze.answer,
-        answerSecondary: `${term.ja.software_gloss || term.ja.gloss}（${term.term} / ${term.pos}）`,
+        answerSecondary: `${term.ja.software_gloss || term.ja.gloss}（${term.term}・${formatPosJa(term.pos)}）`,
         exampleEn: ex0?.text ?? null,
         exampleJa: ex0?.ja ?? null,
       };
     }
-    // Graceful fallback when a record has no cloze match (e.g. shorthand abbreviation).
     return {
       effectiveMode: "recognition",
       fallbackFromCloze: true,
-      promptLabel: "Recognition（cloze 未対応のため切替）",
+      promptLabel: "英→日（穴埋め未対応のため切替）",
       promptPrimary: term.term,
       promptSecondary: term.collocations.slice(0, 3).join(" · ") || null,
       expectedAnswers: [],
@@ -89,7 +89,7 @@ export function buildCardPresentation(
     return {
       effectiveMode: "active-recall",
       fallbackFromCloze: false,
-      promptLabel: "Active Recall — 日本語から英語を想起",
+      promptLabel: "日→英 — 日本語の意味から英単語を思い出す",
       promptPrimary: term.ja.software_gloss || term.ja.gloss,
       promptSecondary:
         term.ja.gloss && term.ja.gloss !== term.ja.software_gloss
@@ -106,7 +106,7 @@ export function buildCardPresentation(
   return {
     effectiveMode: "recognition",
     fallbackFromCloze: false,
-    promptLabel: "Recognition — 英語から意味を想起",
+    promptLabel: "英→日 — 英語から技術的な意味を思い出す",
     promptPrimary: term.term,
     promptSecondary: term.collocations.slice(0, 3).join(" · ") || null,
     expectedAnswers: [],

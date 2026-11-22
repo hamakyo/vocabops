@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
 import { buildCardPresentation, checkTypedAnswer } from "../lib/cards";
+import {
+  formatCategoryJa,
+  formatPosJa,
+  formatQueueKindJa,
+} from "../lib/labels";
 import type { GradePreview, QueueItem } from "../lib/scheduler";
 import type { Grade, StudyMode } from "../lib/schema";
 
@@ -14,10 +19,10 @@ interface StudyCardProps {
 }
 
 const RATINGS: { grade: Grade; label: string; keyHint: string }[] = [
-  { grade: "again", label: "Again", keyHint: "1" },
-  { grade: "hard", label: "Hard", keyHint: "2" },
-  { grade: "good", label: "Good", keyHint: "3" },
-  { grade: "easy", label: "Easy", keyHint: "4" },
+  { grade: "again", label: "もう一度", keyHint: "1" },
+  { grade: "hard", label: "難しい", keyHint: "2" },
+  { grade: "good", label: "普通", keyHint: "3" },
+  { grade: "easy", label: "簡単", keyHint: "4" },
 ];
 
 export function StudyCard({
@@ -39,7 +44,6 @@ export function StudyCard({
     presentation.effectiveMode === "active-recall" ||
     presentation.effectiveMode === "cloze";
 
-  // Reset card UI when moving to the next term.
   useEffect(() => {
     setRevealed(false);
     setTyped("");
@@ -72,23 +76,27 @@ export function StudyCard({
   };
 
   return (
-    <section className="card" aria-label="Study card">
+    <section className="card" aria-label="学習カード">
       <div className="card-meta">
         <div className="badge-row">
-          <span className="badge badge-kind">{item.kind}</span>
-          <span className="badge">{term.pos}</span>
+          <span className="badge badge-kind">{formatQueueKindJa(item.kind)}</span>
+          <span className="badge">{formatPosJa(term.pos)}</span>
           {term.cefr && <span className="badge">{term.cefr}</span>}
           {term.curation?.status === "draft" && (
-            <span className="badge badge-draft">draft</span>
+            <span className="badge badge-draft">未レビュー</span>
           )}
           {retention !== null && (
-            <span className="badge">R {Math.round(retention * 100)}%</span>
+            <span className="badge">定着率 {Math.round(retention * 100)}%</span>
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span>{remainingCount} left</span>
-          <button type="button" onClick={onExit} style={{ padding: "4px 10px", fontSize: 12 }}>
-            Today
+          <span>残り {remainingCount} 枚</span>
+          <button
+            type="button"
+            onClick={onExit}
+            style={{ padding: "4px 10px", fontSize: 12 }}
+          >
+            今日へ戻る
           </button>
         </div>
       </div>
@@ -117,11 +125,11 @@ export function StudyCard({
             type="text"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
-            placeholder="Type answer (optional)..."
+            placeholder="英単語を入力（任意）..."
             autoComplete="off"
             spellCheck={false}
           />
-          <button type="submit">Check</button>
+          <button type="submit">答え合わせ</button>
         </form>
       )}
 
@@ -131,15 +139,15 @@ export function StudyCard({
           className="btn-primary reveal-btn"
           onClick={() => setRevealed(true)}
         >
-          Show Answer (Space)
+          答えを見る（Space）
         </button>
       ) : (
         <div className="answer-panel">
           {checked !== null && (
             <div className={`feedback ${checked ? "ok" : "miss"}`}>
               {checked
-                ? `Match: "${typed.trim()}"`
-                : `Typed: "${typed.trim() || "(empty)"}"`}
+                ? `一致：「${typed.trim()}」`
+                : `入力：「${typed.trim() || "未入力"}」`}
             </div>
           )}
 
@@ -160,21 +168,23 @@ export function StudyCard({
           <div className="badge-row" style={{ marginTop: 8 }}>
             {term.categories.map((cat) => (
               <span key={cat} className="badge">
-                {cat}
+                {formatCategoryJa(cat)}
               </span>
             ))}
             {term.metrics.document_frequency !== null && (
-              <span className="badge">df {term.metrics.document_frequency}</span>
+              <span className="badge">
+                出現文書数 {term.metrics.document_frequency}
+              </span>
             )}
           </div>
 
           {term.collocations.length > 0 && (
             <p className="prompt-sub" style={{ marginTop: 10, marginBottom: 0 }}>
-              Collocations: {term.collocations.slice(0, 4).join(" · ")}
+              よく使う組み合わせ：{term.collocations.slice(0, 4).join(" · ")}
             </p>
           )}
 
-          <div className="rating-grid" role="group" aria-label="FSRS rating">
+          <div className="rating-grid" role="group" aria-label="記憶度評価">
             {RATINGS.map(({ grade, label, keyHint }) => (
               <button
                 key={grade}
@@ -190,7 +200,7 @@ export function StudyCard({
             ))}
           </div>
           <div className="shortcut-hint">
-            Keyboard: 1 Again · 2 Hard · 3 Good · 4 Easy
+            ショートカット: Space 答え表示 ・ 1 もう一度 ・ 2 難しい ・ 3 普通 ・ 4 簡単
           </div>
         </div>
       )}

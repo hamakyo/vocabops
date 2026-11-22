@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { DATASETS, type DatasetId } from "../lib/dataset";
+import { formatCategoryJa } from "../lib/labels";
 import type { DailyQueue, PortfolioStats } from "../lib/scheduler";
 import type { StudyMode, VocabularyDataset } from "../lib/schema";
 
@@ -23,9 +24,9 @@ interface TodaySummaryProps {
 }
 
 const MODE_OPTIONS: { id: StudyMode; label: string }[] = [
-  { id: "recognition", label: "Recognition" },
-  { id: "active-recall", label: "Active Recall" },
-  { id: "cloze", label: "Cloze" },
+  { id: "recognition", label: "英→日（認識）" },
+  { id: "active-recall", label: "日→英（想起）" },
+  { id: "cloze", label: "穴埋め（Cloze）" },
 ];
 
 export function TodaySummary({
@@ -52,16 +53,23 @@ export function TodaySummary({
       ? `${Math.round(stats.averageRetention * 100)}%`
       : "—";
 
+  const datasetNoteJa =
+    datasetId === "core500-draft"
+      ? "※ 0.1.0-draft は GPU 生成の未レビュー下書きデータです（訳・例文は随時キュレーション予定）。"
+      : "※ スキーマ確認用のサンプル語彙データセットです。";
+
   return (
-    <section className="card" aria-label="Today summary">
+    <section className="card" aria-label="今日の学習サマリー">
       <div className="metrics-grid">
         <div className="metric-tile">
-          <div className="metric-value">{queue.dueReviewCount + queue.learningCount}</div>
-          <div className="metric-label">Review due</div>
+          <div className="metric-value">
+            {queue.dueReviewCount + queue.learningCount}
+          </div>
+          <div className="metric-label">復習待ち</div>
         </div>
         <div className="metric-tile">
           <div className="metric-value">{queue.newAvailableCount}</div>
-          <div className="metric-label">New today</div>
+          <div className="metric-label">今日の新規</div>
         </div>
         <div className="metric-tile">
           <div className="metric-value">
@@ -70,15 +78,15 @@ export function TodaySummary({
               /{stats.totalTerms}
             </span>
           </div>
-          <div className="metric-label">Learned</div>
+          <div className="metric-label">学習済み</div>
         </div>
         <div className="metric-tile">
           <div className="metric-value">{retentionLabel}</div>
-          <div className="metric-label">Est. retention</div>
+          <div className="metric-label">推定定着率</div>
         </div>
       </div>
 
-      <div className="mode-pills" role="group" aria-label="Card mode">
+      <div className="mode-pills" role="group" aria-label="出題モード">
         {MODE_OPTIONS.map((opt) => (
           <button
             key={opt.id}
@@ -93,7 +101,7 @@ export function TodaySummary({
 
       <div className="controls-grid">
         <div className="control-group">
-          <label htmlFor="dataset-select">Dataset</label>
+          <label htmlFor="dataset-select">データセット</label>
           <select
             id="dataset-select"
             value={datasetId}
@@ -108,23 +116,23 @@ export function TodaySummary({
         </div>
 
         <div className="control-group">
-          <label htmlFor="category-select">Category filter</label>
+          <label htmlFor="category-select">カテゴリ</label>
           <select
             id="category-select"
             value={selectedCategory}
             onChange={(e) => onCategoryChange(e.target.value)}
           >
-            <option value="">All categories ({dataset.terms.length})</option>
+            <option value="">すべて（{dataset.terms.length}語）</option>
             {categories.map((cat) => (
               <option key={cat} value={cat}>
-                {cat}
+                {formatCategoryJa(cat)}（{cat}）
               </option>
             ))}
           </select>
         </div>
 
         <div className="control-group">
-          <label htmlFor="daily-new-select">New cards / day</label>
+          <label htmlFor="daily-new-select">1日の新規カード上限</label>
           <select
             id="daily-new-select"
             value={dailyNewLimit}
@@ -132,19 +140,22 @@ export function TodaySummary({
           >
             {[5, 10, 15, 20, 30, 50].map((n) => (
               <option key={n} value={n}>
-                {n} new / day
+                {n}語 / 日
               </option>
             ))}
           </select>
         </div>
 
         <div className="control-group">
-          <label>Today progress</label>
+          <label>今日の進捗</label>
           <div style={{ padding: "8px 0", fontSize: 13, color: "var(--muted)" }}>
-            Reviewed: <strong style={{ color: "var(--text)" }}>{stats.reviewedToday}</strong>
+            復習済み:{" "}
+            <strong style={{ color: "var(--text)" }}>
+              {stats.reviewedToday}回
+            </strong>
             {stats.goodOrEasyRateToday !== null && (
               <>
-                {" · "}Good/Easy:{" "}
+                {" · "}正答率:{" "}
                 <strong style={{ color: "var(--text)" }}>
                   {Math.round(stats.goodOrEasyRateToday * 100)}%
                 </strong>
@@ -162,19 +173,19 @@ export function TodaySummary({
           onClick={onStartSession}
         >
           {queue.items.length > 0
-            ? `Start Session (${queue.items.length} cards)`
-            : "All caught up for today"}
+            ? `今日の学習を始める（${queue.items.length}枚）`
+            : "今日の学習は完了しています"}
         </button>
       </div>
 
-      {dataset.note && <div className="note-banner">{dataset.note}</div>}
+      <div className="note-banner">{datasetNoteJa}</div>
 
       <div className="footer-actions">
         <button type="button" onClick={onExportBackup}>
-          Export review state
+          学習履歴を書き出す
         </button>
         <button type="button" onClick={() => fileRef.current?.click()}>
-          Import review state
+          学習履歴を読み込む
         </button>
         <input
           ref={fileRef}
@@ -192,12 +203,12 @@ export function TodaySummary({
         <button
           type="button"
           onClick={() => {
-            if (window.confirm("Reset all local FSRS review history?")) {
+            if (window.confirm("ローカルの FSRS 学習履歴をすべてリセットしますか？")) {
               onResetProgress();
             }
           }}
         >
-          Reset local state
+          履歴をリセット
         </button>
       </div>
     </section>

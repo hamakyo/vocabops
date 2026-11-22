@@ -96,16 +96,16 @@ export function deserializeCard(card: SerializedFsrsCard): Card {
 export function formatInterval(now: Date, due: Date): string {
   const diffMs = Math.max(0, due.getTime() - now.getTime());
   const minutes = Math.round(diffMs / 60_000);
-  if (minutes < 1) return "<1m";
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1) return "1分未満";
+  if (minutes < 60) return `${minutes}分`;
   const hours = Math.round(diffMs / 3_600_000);
-  if (hours < 24) return `${hours}h`;
+  if (hours < 24) return `${hours}時間`;
   const days = Math.round(diffMs / 86_400_000);
-  if (days < 30) return `${days}d`;
+  if (days < 30) return `${days}日`;
   const months = Math.round(days / 30);
-  if (months < 12) return `${months}mo`;
+  if (months < 12) return `${months}ヶ月`;
   const years = (days / 365).toFixed(1).replace(/\.0$/, "");
-  return `${years}y`;
+  return `${years}年`;
 }
 
 export function previewGrades(

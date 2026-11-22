@@ -7,6 +7,7 @@ import {
   getDatasetById,
   listCategories,
 } from "./lib/dataset";
+import { formatPosJa } from "./lib/labels";
 import {
   buildDailyQueue,
   computePortfolioStats,
@@ -138,7 +139,7 @@ export function App() {
         updateStore(parsed);
         setNow(new Date());
       } catch (err) {
-        window.alert(`Failed to import review state: ${String(err)}`);
+        window.alert(`学習履歴の読み込みに失敗しました: ${String(err)}`);
       }
     },
     [updateStore],
@@ -151,23 +152,23 @@ export function App() {
     setNow(new Date());
   }, [updateStore]);
 
-  const deckFiltered = useMemo(() => {
+  const deckMatches = useMemo(() => {
     const q = deckQuery.trim().toLowerCase();
-    return dataset.terms
-      .filter((t) => {
-        if (selectedCategory && !t.categories.includes(selectedCategory)) {
-          return false;
-        }
-        if (!q) return true;
-        return (
-          t.id.toLowerCase().includes(q) ||
-          t.term.toLowerCase().includes(q) ||
-          t.ja.gloss.toLowerCase().includes(q) ||
-          t.ja.software_gloss.toLowerCase().includes(q)
-        );
-      })
-      .slice(0, 80);
+    return dataset.terms.filter((t) => {
+      if (selectedCategory && !t.categories.includes(selectedCategory)) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        t.id.toLowerCase().includes(q) ||
+        t.term.toLowerCase().includes(q) ||
+        t.ja.gloss.toLowerCase().includes(q) ||
+        t.ja.software_gloss.toLowerCase().includes(q)
+      );
+    });
   }, [dataset.terms, selectedCategory, deckQuery]);
+
+  const deckFiltered = useMemo(() => deckMatches.slice(0, 80), [deckMatches]);
 
   return (
     <div className="app-shell">
@@ -175,10 +176,10 @@ export function App() {
         <div className="brand">
           <span className="brand-title">VocabOps</span>
           <span className="brand-sub">
-            {dataset.dataset} · {dataset.version}
+            エンジニア英語学習 · {dataset.version}
           </span>
         </div>
-        <nav className="nav-tabs" aria-label="Main navigation">
+        <nav className="nav-tabs" aria-label="メインナビゲーション">
           <button
             type="button"
             className={`btn-tab ${view === "today" ? "active" : ""}`}
@@ -187,7 +188,7 @@ export function App() {
               setView("today");
             }}
           >
-            Today
+            今日
           </button>
           <button
             type="button"
@@ -197,14 +198,14 @@ export function App() {
               setView("study");
             }}
           >
-            Study ({queue.items.length})
+            学習（{queue.items.length}）
           </button>
           <button
             type="button"
             className={`btn-tab ${view === "deck" ? "active" : ""}`}
             onClick={() => setView("deck")}
           >
-            Deck
+            単語一覧
           </button>
         </nav>
       </header>
@@ -267,35 +268,52 @@ export function App() {
         ))}
 
       {view === "deck" && (
-        <section className="card" aria-label="Deck browser">
+        <section className="card" aria-label="単語一覧">
           <input
             className="deck-search"
             type="search"
             value={deckQuery}
             onChange={(e) => setDeckQuery(e.target.value)}
-            placeholder="Filter terms by English or Japanese..."
+            placeholder="英単語・日本語訳で絞り込み..."
           />
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+            表示中 {deckFiltered.length} / 該当 {deckMatches.length} 語
+          </div>
           {deckFiltered.map((t) => {
             const card = store.cards[t.id] ?? null;
-            const ret = getTermRetention(card, now, store.settings.requestRetention);
+            const ret = getTermRetention(
+              card,
+              now,
+              store.settings.requestRetention,
+            );
             return (
               <div key={t.id} className="deck-row">
                 <div>
                   <span className="deck-term">{t.term}</span>{" "}
-                  <span className="badge">{t.pos}</span>{" "}
+                  <span className="badge">{formatPosJa(t.pos)}</span>{" "}
                   {t.cefr && <span className="badge">{t.cefr}</span>}
                   <div className="deck-gloss">
                     {t.ja.software_gloss || t.ja.gloss}
                   </div>
                 </div>
-                <div style={{ textAlign: "right", fontSize: 12, color: "var(--muted)" }}>
+                <div
+                  style={{
+                    textAlign: "right",
+                    fontSize: 12,
+                    color: "var(--muted)",
+                  }}
+                >
                   {card ? (
                     <>
-                      <div>reps: {card.reps}</div>
-                      <div>{ret !== null ? `R ${Math.round(ret * 100)}%` : "learning"}</div>
+                      <div>復習 {card.reps} 回</div>
+                      <div>
+                        {ret !== null
+                          ? `定着率 ${Math.round(ret * 100)}%`
+                          : "学習中"}
+                      </div>
                     </>
                   ) : (
-                    <span>new</span>
+                    <span>未学習</span>
                   )}
                 </div>
               </div>

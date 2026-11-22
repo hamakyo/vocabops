@@ -16,12 +16,12 @@ export const SAMPLE_DATASET = sampleRaw as VocabularyDataset;
 export const DATASETS: readonly DatasetOption[] = [
   {
     id: "core500-draft",
-    label: `Core 500 (${CORE500_DATASET.version}, ${CORE500_DATASET.terms.length} entries)`,
+    label: `Core 500 ドラフト（${CORE500_DATASET.version}・${CORE500_DATASET.terms.length}語）`,
     dataset: CORE500_DATASET,
   },
   {
     id: "sample",
-    label: `Sample Schema Deck (${SAMPLE_DATASET.terms.length} entries)`,
+    label: `サンプル語彙（${SAMPLE_DATASET.terms.length}語）`,
     dataset: SAMPLE_DATASET,
   },
 ];
