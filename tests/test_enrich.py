@@ -149,7 +149,13 @@ def test_extract_enrichment_pos_forms_and_all_collocation_patterns():
     path2 = FakeToken("path", "path", "NOUN", "ROOT")
     fb2 = path2.add_child(FakeToken("fallback", "fallback", "NOUN", "compound"))
 
-    doc2 = _make_doc([inv2, cache2, inv2_again, cache2_again, fb_verb, path2, fb2])
+    # Transformer taggers often label prenominal "underlying" as VERB + amod
+    store2 = FakeToken("store", "store", "NOUN", "ROOT")
+    under2 = store2.add_child(FakeToken("underlying", "underlie", "VERB", "amod"))
+
+    doc2 = _make_doc(
+        [inv2, cache2, inv2_again, cache2_again, fb_verb, path2, fb2, store2, under2]
+    )
 
     rows = extract_enrichment(
         ["github", "stackoverflow"],
@@ -193,10 +199,13 @@ def test_extract_enrichment_pos_forms_and_all_collocation_patterns():
         }
     ]
 
-    # "underlying" adjective kept intact instead of "underlie"
+    # "underlying" adjective kept intact for both ADJ and VERB+amod uses
     assert "underlying.adjective" in by_id
+    assert "underlie.v" not in by_id
+    assert by_id["underlying.adjective"]["df"] == 2
     assert by_id["underlying.adjective"]["collocations"] == [
-        {"phrase": "underlying cause", "pattern": "adj_noun", "count": 1, "df": 1}
+        {"phrase": "underlying cause", "pattern": "adj_noun", "count": 1, "df": 1},
+        {"phrase": "underlying store", "pattern": "adj_noun", "count": 1, "df": 1},
     ]
 
     # POS homograph split: fallback.n (2/3) vs fallback.v (1/3)

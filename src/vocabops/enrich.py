@@ -204,13 +204,14 @@ def _token_lemma_and_pos(token: TokenLike) -> tuple[str, str] | None:
     schema_pos = UPOS_TO_SCHEMA_POS.get(token.pos_)
     if schema_pos is None:
         return None
-    # Keep "underlying" intact when tagged as an adjective (matches normalize.py
-    # and the VocabOps target vocabulary).
+    # Keep "underlying" intact as an adjective even when a Transformer tagger
+    # labels prenominal participial uses ("underlying cause") as VERB + amod.
     surface = token.text.strip().lower()
-    if surface == "underlying" and schema_pos == "adjective":
-        lemma = "underlying"
-    else:
-        lemma = _clean_lemma(token.lemma_ or token.text)
+    if surface == "underlying" and (
+        schema_pos == "adjective" or token.dep_ == "amod"
+    ):
+        return "underlying", "adjective"
+    lemma = _clean_lemma(token.lemma_ or token.text)
     if lemma is None:
         return None
     return lemma, schema_pos
