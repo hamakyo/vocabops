@@ -1,0 +1,49 @@
+{
+  "snapshot_id": "combined-3source-enrich-v1",
+  "pipeline_version": "0.1.0",
+  "stage": "pos_collocations",
+  "model": "en_core_web_trf",
+  "model_version": "3.8.0",
+  "spacy_version": "3.8.18",
+  "device_requested": "gpu",
+  "device_used": "gpu",
+  "documents": 52170,
+  "sources": [
+    "codesearchnet",
+    "gharchive",
+    "stackoverflow"
+  ],
+  "terms_filter_count": null,
+  "min_df": 3,
+  "min_collocation_count": 2,
+  "max_collocations": 8,
+  "max_forms": 8,
+  "emitted_entries": 22749,
+  "corpus_checksums": {
+    "gharchive": {
+      "docs": 17390,
+      "sha256": "a28b09a8aab27416b95c25dd5966da1ac7db9173a2948ce2b600a8a7169dbcdb"
+    },
+    "stackoverflow": {
+      "docs": 17390,
+      "sha256": "459dc315a667fd55bcafae4341d9eecdd40856eaddbd64d069b327691238d3ac",
+      "stage1_total_lines": 18562443
+    },
+    "codesearchnet": {
+      "docs": 17390,
+      "sha256": "f1c5e06de4a0c4fd3d65a6e99943ebcbb5bbdc2c4447ef1778356da94dfcc6fc"
+    },
+    "combined": {
+      "docs": 52170,
+      "sha256": "29e170a7a0248e822aae72869e606ad915062700f9b2e47b7dd695a18170a9db"
+    }
+  },
+  "core500_vocab_slice": {
+    "artifact": "data/core500-vocab-v3-enrichment.jsonl",
+    "terms_source": "data/core500-vocab-v3.jsonl",
+    "rows": 878,
+    "covered_lemmas": 498,
+    "rows_with_collocations": 749,
+    "sha256": "b995e90a25bd578a85ac47ccd1886942dfd11c7858ade493fab771963b877468"
+  }
+}
