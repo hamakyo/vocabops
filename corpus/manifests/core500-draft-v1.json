@@ -10,15 +10,14 @@
   "torch_version": "2.14.1+cu130",
   "device": "cuda:0",
   "decoding": "greedy",
+  "max_new_tokens": 384,
+  "max_retries": 2,
+  "retried_entries": 1,
   "min_pos_share": 0.25,
   "entries_drafted": 581,
-  "clean_records": 535,
+  "clean_records": 549,
   "warning_counts": {
-    "example_missing_target_term": 29,
-    "json_parse_failed": 17,
-    "missing_example_en": 17,
-    "missing_gloss": 17,
-    "missing_software_gloss": 17
+    "example_missing_target_term": 32
   },
   "output_artifact": {
     "artifact": "data/core500-vocab-v3-drafts.jsonl",
@@ -26,8 +25,8 @@
     "ranking_source": "data/core500-vocab-v3.jsonl",
     "rows": 581,
     "covered_lemmas": 498,
-    "parsed_json_ok": 564,
-    "has_cloze": 535,
-    "sha256": "3464aaf3b571342840c52e67d577ca6df2547cac1dd66c087414e367bcf95361"
+    "parsed_json_ok": 581,
+    "has_cloze": 549,
+    "sha256": "68f3c5adbb88f6243f8256e2f048d32ac36ba17d9808fc8c72b6a72e35367830"
   }
 }
