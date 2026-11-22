@@ -1,0 +1,35 @@
+{
+  "dataset": "vocabops-core500",
+  "dataset_version": "0.1.0-draft",
+  "pipeline_version": "0.1.0",
+  "snapshot_id": "core500-draft-v1",
+  "status": "draft",
+  "record_count": 581,
+  "unique_lemmas": 498,
+  "curation_counts": {
+    "draft": 581
+  },
+  "clean_records": 549,
+  "warning_counts": {
+    "example_missing_target_term": 32
+  },
+  "sources": [
+    "codesearchnet",
+    "gharchive",
+    "stackoverflow"
+  ],
+  "files": {
+    "vocabulary.json": {
+      "bytes": 1015639,
+      "sha256": "c4316ee689e163358118d74aa3a902f0bdd4c7964df1024299047f8fefc93fc4"
+    },
+    "vocabulary.csv": {
+      "bytes": 240192,
+      "sha256": "533c34954f15e047de3aa66f7af0b30819fdb86383f6fa9210b5958ad970ea09"
+    },
+    "METHODOLOGY.md": {
+      "bytes": 2461,
+      "sha256": "d01843170a7b1966430910a5f45b516a1cbe26cb342cc7be2649d44a6007fd61"
+    }
+  }
+}

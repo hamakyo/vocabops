@@ -44,15 +44,15 @@ Goal: generate a reproducible software-engineering vocabulary ranking without bu
 - [x] preserve document boundaries
 - [x] assign stable/reproducible document IDs
 - [x] tokenize
-- [x] lemmatize (dictionary-validated, not POS-aware)
-- [ ] part-of-speech tag
+- [x] lemmatize (dictionary-validated in `vocabops.normalize`; POS-aware via spaCy `en_core_web_trf` in `vocabops.enrich`)
+- [x] part-of-speech tag — implemented via `python -m vocabops.enrich` on Colab GPU (`data/core500-vocab-v3-enrichment.jsonl`)
 - [x] preserve source-family metadata
 
 ### Statistics
 
 - [x] compute term frequency
 - [x] compute document frequency
-- [ ] compute source-family frequency
+- [x] compute source-family frequency — per-source `tf`/`df` recorded in `by_source` (`gharchive`, `stackoverflow`, `codesearchnet`)
 - [ ] compute repository frequency where available
 - [x] implement a first `se_specificity` score
 - [x] emit corpus snapshot manifests
@@ -69,14 +69,14 @@ Goal: turn the corpus ranking into the first useful software-engineering vocabul
 - [x] define minimum frequency/document-frequency thresholds
 - [ ] detect and down-rank boilerplate and obvious low-value terms
 - [x] review high-ranking technical nouns separately from transferable English vocabulary — done via the two views and [Part 4](core500-evaluation.md#part-4--vocabulary-and-technical-views); the split is a review, not a rule.
-- [ ] curate Japanese glosses
-- [ ] attach CEFR where reliable
-- [ ] extract common collocations
-- [ ] add curated or safely generated examples
-- [ ] publish Core 500 as JSON and CSV
-- [ ] document methodology, source coverage, and known biases
+- [ ] curate Japanese glosses — initial 581 drafts generated via `vocabops.draft_curation` (`data/core500-vocab-v3-drafts.jsonl`); awaiting human review via `vocabops.curation`
+- [ ] attach CEFR where reliable — draft estimates attached; awaiting human audit
+- [x] extract common collocations — dependency-based collocations extracted from the 52,170-doc 3-source corpus (`data/core500-vocab-v3-enrichment.jsonl`)
+- [ ] add curated or safely generated examples — synthetic corpus-grounded examples and cloze cards drafted (`examples[].kind = "synthetic"`); awaiting human curation
+- [ ] publish Core 500 as JSON and CSV — pre-release `data/releases/0.1.0-draft/` published via `vocabops.curation build-release`; stable `0.1.0` pending human review
+- [x] document methodology, source coverage, and known biases — documented in [corpus-sources.md](corpus-sources.md), [core500-evaluation.md](core500-evaluation.md), and `data/releases/0.1.0-draft/METHODOLOGY.md`
 
-Thresholds are defined with evidence in [Core 500 candidate — evaluation](core500-evaluation.md): the shared lemma floor is `3e-07` (day-corpus measurement) and the ranking cut is `--min-df 10` (the `min_df = 3` top is junk-led at this corpus size). The other boxes remain open; `data/core500-v0.jsonl` is a candidate artifact, not a published dataset.
+Thresholds are defined with evidence in [Core 500 candidate — evaluation](core500-evaluation.md): the shared lemma floor is `3e-07` (day-corpus measurement) and the ranking cut is `--min-df 10` (the `min_df = 3` top is junk-led at this corpus size). The pre-release `data/releases/0.1.0-draft/` contains unreviewed GPU-generated drafts (`curation.status = "draft"`, `needs_human_review = true`); stable `0.1.0` will follow human curation.
 
 Exit condition:
 
