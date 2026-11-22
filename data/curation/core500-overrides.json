@@ -1,0 +1,14 @@
+{
+  "overrides": {
+    "py.n": {
+      "gloss": "Python",
+      "software_gloss": "Python（略称・拡張子 .py）",
+      "cefr": null,
+      "categories": ["core", "backend"],
+      "example_en": "Run the migration script with py or python3 before deploying.",
+      "example_ja": "デプロイ前に py または python3 でマイグレーションスクリプトを実行する。",
+      "status": "reviewed",
+      "review_note": "Fixed draft gloss 'ピ' to Python and replaced unnatural example sentence."
+    }
+  }
+}

@@ -7,7 +7,7 @@
 - **Snapshot ID:** `core500-draft-v1`
 - **Metric snapshot:** `combined-3source-enrich-v1`
 - **Records:** 581 `(lemma, pos)` entries covering 498 unique lemmas
-- **Curation status breakdown:** {"draft": 581}
+- **Curation status breakdown:** {"draft": 580, "reviewed": 1}
 - **Zero-warning records (with cloze):** 549 / 581
 
 ## Corpus & Ranking
