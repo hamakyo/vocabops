@@ -2,8 +2,8 @@
   "dataset": "vocabops-core500",
   "version": "0.1.0-draft",
   "snapshot_id": "core500-draft-v1",
-  "status": "draft",
-  "note": "Unreviewed GPU-generated pre-release draft aligned with the VocabOps schema. Inspect curation.needs_human_review before treating glosses or synthetic examples as curated.",
+  "status": "mixed",
+  "note": "Partially reviewed Core 500 dataset; inspect curation.status per record.",
   "terms": [
     {
       "id": "base64.n",
@@ -836,12 +836,13 @@
       "lemma": "py",
       "pos": "noun",
       "ja": {
-        "gloss": "ピ",
-        "software_gloss": "Python"
+        "gloss": "Python",
+        "software_gloss": "Python（略称・拡張子 .py）"
       },
-      "cefr": "B2",
+      "cefr": null,
       "categories": [
-        "core"
+        "core",
+        "backend"
       ],
       "forms": [],
       "collocations": [
@@ -853,14 +854,14 @@
       ],
       "examples": [
         {
-          "text": "We see Py as the future of our development stack.",
-          "kind": "synthetic",
-          "ja": "Pyを将来的な開発スタックの中心と見ています。"
+          "text": "Run the migration script with py or python3 before deploying.",
+          "kind": "curated",
+          "ja": "デプロイ前に py または python3 でマイグレーションスクリプトを実行する。"
         }
       ],
       "cloze": {
-        "prompt": "We see ____ as the future of our development stack.",
-        "answer": "Py"
+        "prompt": "Run the migration script with ____ or python3 before deploying.",
+        "answer": "py"
       },
       "metrics": {
         "frequency": {
@@ -892,10 +893,12 @@
         ]
       },
       "curation": {
-        "status": "draft",
+        "status": "reviewed",
         "model": "Qwen/Qwen2.5-7B-Instruct",
-        "needs_human_review": true,
-        "validation_warnings": []
+        "needs_human_review": false,
+        "validation_warnings": [],
+        "human_edited": true,
+        "review_note": "Fixed draft gloss 'ピ' to Python and replaced unnatural example sentence."
       }
     },
     {

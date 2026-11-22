@@ -86,15 +86,15 @@ Core 500 can be consumed independently as an open dataset and its ranking can be
 
 Goal: make Core 500 learnable in short daily sessions.
 
-- [ ] build a minimal web application
-- [ ] integrate FSRS
-- [ ] support New / Review queues
-- [ ] support Again / Hard / Good / Easy grading
-- [ ] add recognition cards
-- [ ] add active-recall cards
-- [ ] add cloze cards
-- [ ] persist per-user review state
-- [ ] show estimated retention
+- [x] build a minimal web application (`apps/web/`, Vite + React + TypeScript, mobile-first)
+- [x] integrate FSRS (`ts-fsrs` deterministic scheduler keyed by stable vocabulary IDs in `apps/web/src/lib/scheduler.ts`)
+- [x] support New / Review queues
+- [x] support Again / Hard / Good / Easy grading
+- [x] add recognition cards
+- [x] add active-recall cards
+- [x] add cloze cards
+- [x] persist per-user review state (`localStorage` + JSON export/import backup)
+- [x] show estimated retention
 
 Exit condition:
 

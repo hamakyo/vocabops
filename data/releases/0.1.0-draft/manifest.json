@@ -3,11 +3,12 @@
   "dataset_version": "0.1.0-draft",
   "pipeline_version": "0.1.0",
   "snapshot_id": "core500-draft-v1",
-  "status": "draft",
+  "status": "mixed",
   "record_count": 581,
   "unique_lemmas": 498,
   "curation_counts": {
-    "draft": 581
+    "draft": 580,
+    "reviewed": 1
   },
   "clean_records": 549,
   "warning_counts": {
@@ -20,16 +21,16 @@
   ],
   "files": {
     "vocabulary.json": {
-      "bytes": 1015639,
-      "sha256": "c4316ee689e163358118d74aa3a902f0bdd4c7964df1024299047f8fefc93fc4"
+      "bytes": 1015783,
+      "sha256": "fdb9c96bdfcc6d11ac75796474aa21071b4f78f6778e146b93c5201a01f8ca2a"
     },
     "vocabulary.csv": {
-      "bytes": 240192,
-      "sha256": "533c34954f15e047de3aa66f7af0b30819fdb86383f6fa9210b5958ad970ea09"
+      "bytes": 240364,
+      "sha256": "903cbede73d39e714054c752cae5af3c718fa38f1eaf592b1c0d22a844d17e8c"
     },
     "METHODOLOGY.md": {
-      "bytes": 2461,
-      "sha256": "d01843170a7b1966430910a5f45b516a1cbe26cb342cc7be2649d44a6007fd61"
+      "bytes": 2476,
+      "sha256": "465fd0b23185ea4cc65db51e90b7252fae71493ddbcae63f73514352c484f522"
     }
   }
 }
