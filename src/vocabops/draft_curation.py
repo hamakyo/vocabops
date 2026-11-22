@@ -45,10 +45,12 @@ __all__ = [
     "DEFAULT_MIN_POS_SHARE",
     "DEFAULT_BATCH_SIZE",
     "DEFAULT_MAX_NEW_TOKENS",
+    "DEFAULT_MAX_RETRIES",
     "ALLOWED_CATEGORIES",
     "VALID_CEFR",
     "select_entries",
     "build_prompt_messages",
+    "build_retry_prompt_messages",
     "parse_llm_json",
     "build_cloze",
     "assemble_draft_record",
@@ -60,7 +62,8 @@ __all__ = [
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 DEFAULT_MIN_POS_SHARE = 0.25
 DEFAULT_BATCH_SIZE = 16
-DEFAULT_MAX_NEW_TOKENS = 256
+DEFAULT_MAX_NEW_TOKENS = 384
+DEFAULT_MAX_RETRIES = 2
 
 # Allowlisted categories from ``docs/data-schema.md`` excluding
 # ``llm-native-candidate`` / ``llm-native``, which must only be assigned from
@@ -203,6 +206,47 @@ def build_prompt_messages(entry: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def build_retry_prompt_messages(
+    entry: dict[str, Any], *, attempt: int = 1
+) -> list[dict[str, str]]:
+    """Build a stricter retry prompt when an earlier generation failed JSON parsing."""
+    base_msgs = build_prompt_messages(entry)
+    if attempt <= 1:
+        extra = (
+            "\nIMPORTANT: Return strictly valid single-line JSON only. "
+            "Do NOT include markdown fences, comments, trailing commas, or "
+            "double quotes inside string values (use single quotes if needed)."
+        )
+    else:
+        lemma = str(entry["lemma"])
+        pos = str(entry["pos"])
+        extra = (
+            "\nSTRICT FORMAT REQUIRED. Fill in this exact JSON object on a "
+            "single line with plain text values and NO double quotes inside values:\n"
+            '{"gloss":"<ja>","software_gloss":"<ja>","cefr":"B2",'
+            '"categories":["core"],"example_en":"<sentence using '
+            f'{lemma} as {pos}>","example_ja":"<ja translation>"}}'
+        )
+    return [
+        base_msgs[0],
+        {"role": "user", "content": base_msgs[1]["content"] + extra},
+    ]
+
+
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+
+
+def _try_load_json_dict(candidate: str) -> dict[str, Any] | None:
+    for text in (candidate, _TRAILING_COMMA_RE.sub(r"\1", candidate)):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def parse_llm_json(raw_text: str) -> dict[str, Any] | None:
     """Extract the first JSON object from model output, or ``None`` if invalid."""
     text = raw_text.strip()
@@ -213,22 +257,14 @@ def parse_llm_json(raw_text: str) -> dict[str, Any] | None:
     if fence_match:
         text = fence_match.group(1).strip()
 
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
-        pass
+    parsed = _try_load_json_dict(text)
+    if parsed is not None:
+        return parsed
 
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:
-        try:
-            parsed = json.loads(text[start : end + 1])
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            return None
+        return _try_load_json_dict(text[start : end + 1])
     return None
 
 
@@ -463,18 +499,26 @@ class TransformersBatchGenerator:
         return self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
 
+def _has_parse_failure(record: dict[str, Any]) -> bool:
+    curation = record.get("curation", {})
+    warnings = curation.get("validation_warnings", []) if isinstance(curation, dict) else []
+    return "json_parse_failed" in warnings
+
+
 def run(
     enrichment_path: Path,
     output_dir: Path,
     snapshot_id: str,
     *,
     ranking_path: Path | None = None,
+    existing_drafts_path: Path | None = None,
     metric_snapshot: str = "combined-3source-enrich-v1",
     dataset_version: str = "0.1.0-draft",
     model_name: str = DEFAULT_MODEL,
     min_pos_share: float = DEFAULT_MIN_POS_SHARE,
     batch_size: int = DEFAULT_BATCH_SIZE,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    max_retries: int = DEFAULT_MAX_RETRIES,
     limit: int | None = None,
     generator: Callable[[Sequence[list[dict[str, str]]]], list[str]] | None = None,
     generator_meta: dict[str, str] | None = None,
@@ -486,6 +530,8 @@ def run(
         raise ValueError(f"min_pos_share must be in [0, 1], got {min_pos_share}")
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
 
     enrichment_rows = _load_jsonl(enrichment_path)
     ranking_order: dict[str, int] | None = None
@@ -504,52 +550,95 @@ def run(
         limit=limit,
     )
 
-    if generator is None:
-        hf_gen = TransformersBatchGenerator(
-            model_name, max_new_tokens=max_new_tokens
-        )
-        gen_fn: Callable[[Sequence[list[dict[str, str]]]], list[str]] = (
-            hf_gen.generate_batch
-        )
-        resolved_meta = hf_gen.meta
-    else:
-        gen_fn = generator
-        resolved_meta = generator_meta or {
-            "model": model_name,
-            "model_revision": "custom",
-            "transformers_version": "custom",
-            "torch_version": "custom",
-            "device": "custom",
-        }
+    existing_by_id: dict[str, dict[str, Any]] = {}
+    if existing_drafts_path is not None:
+        for row in _load_jsonl(existing_drafts_path):
+            rid = row.get("id")
+            if isinstance(rid, str):
+                existing_by_id[rid] = row
 
-    records: list[dict[str, Any]] = []
-    total = len(entries)
-    for start in range(0, total, batch_size):
-        batch = entries[start : start + batch_size]
-        batch_msgs = [build_prompt_messages(entry) for entry in batch]
-        raw_outputs = gen_fn(batch_msgs)
-        if len(raw_outputs) != len(batch):
-            raise RuntimeError(
-                f"generator returned {len(raw_outputs)} outputs for {len(batch)} inputs"
+    records: list[dict[str, Any] | None] = [None] * len(entries)
+    pending_indices: list[int] = []
+    for idx, entry in enumerate(entries):
+        existing = existing_by_id.get(str(entry["id"]))
+        if existing is not None and not _has_parse_failure(existing):
+            records[idx] = existing
+        else:
+            pending_indices.append(idx)
+
+    resolved_meta = generator_meta or {
+        "model": model_name,
+        "model_revision": "custom" if generator is not None else "reused",
+        "transformers_version": "custom" if generator is not None else "reused",
+        "torch_version": "custom" if generator is not None else "reused",
+        "device": "custom" if generator is not None else "reused",
+    }
+
+    retried_entries = 0
+    if pending_indices:
+        if generator is None:
+            hf_gen = TransformersBatchGenerator(
+                model_name, max_new_tokens=max_new_tokens
             )
-        for entry, raw_out in zip(batch, raw_outputs, strict=True):
-            records.append(
-                assemble_draft_record(
-                    entry,
-                    raw_out,
-                    model_name=resolved_meta["model"],
-                    dataset_version=dataset_version,
-                    metric_snapshot=metric_snapshot,
+            gen_fn: Callable[[Sequence[list[dict[str, str]]]], list[str]] = (
+                hf_gen.generate_batch
+            )
+            resolved_meta = hf_gen.meta
+        else:
+            gen_fn = generator
+
+        def _draft_indices(
+            target_indices: list[int],
+            msg_builder: Callable[[dict[str, Any]], list[dict[str, str]]],
+            label: str,
+        ) -> list[int]:
+            failed: list[int] = []
+            total = len(target_indices)
+            for start in range(0, total, batch_size):
+                batch_idxs = target_indices[start : start + batch_size]
+                batch_entries = [entries[i] for i in batch_idxs]
+                batch_msgs = [msg_builder(entry) for entry in batch_entries]
+                raw_outputs = gen_fn(batch_msgs)
+                if len(raw_outputs) != len(batch_entries):
+                    raise RuntimeError(
+                        f"generator returned {len(raw_outputs)} outputs for {len(batch_entries)} inputs"
+                    )
+                for i, entry, raw_out in zip(
+                    batch_idxs, batch_entries, raw_outputs, strict=True
+                ):
+                    rec = assemble_draft_record(
+                        entry,
+                        raw_out,
+                        model_name=resolved_meta["model"],
+                        dataset_version=dataset_version,
+                        metric_snapshot=metric_snapshot,
+                    )
+                    records[i] = rec
+                    if _has_parse_failure(rec):
+                        failed.append(i)
+                print(
+                    f"[draft_curation:{label}] {min(start + batch_size, total)}/{total} entries drafted",
+                    flush=True,
                 )
+            return failed
+
+        failed_indices = _draft_indices(pending_indices, build_prompt_messages, "pass0")
+        for attempt in range(1, max_retries + 1):
+            if not failed_indices:
+                break
+            retried_entries += len(failed_indices)
+            failed_indices = _draft_indices(
+                failed_indices,
+                lambda e, a=attempt: build_retry_prompt_messages(e, attempt=a),
+                f"retry{attempt}",
             )
-        print(
-            f"[draft_curation] {min(start + batch_size, total)}/{total} entries drafted",
-            flush=True,
-        )
+
+    final_records: list[dict[str, Any]] = [rec for rec in records if rec is not None]
+    assert len(final_records) == len(entries)
 
     warning_counts: dict[str, int] = {}
     clean_records = 0
-    for rec in records:
+    for rec in final_records:
         wlist = rec["curation"]["validation_warnings"]
         if not wlist:
             clean_records += 1
@@ -568,8 +657,11 @@ def run(
         "torch_version": resolved_meta["torch_version"],
         "device": resolved_meta["device"],
         "decoding": "greedy",
+        "max_new_tokens": max_new_tokens,
+        "max_retries": max_retries,
+        "retried_entries": retried_entries,
         "min_pos_share": min_pos_share,
-        "entries_drafted": len(records),
+        "entries_drafted": len(final_records),
         "clean_records": clean_records,
         "warning_counts": dict(sorted(warning_counts.items())),
     }
@@ -577,7 +669,7 @@ def run(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "drafts.jsonl").open("w", encoding="utf-8", newline="\n") as f:
-        for rec in records:
+        for rec in final_records:
             f.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
             f.write("\n")
     with (output_dir / "manifest.json").open("w", encoding="utf-8", newline="\n") as f:
@@ -605,6 +697,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="optional ranking JSONL for stable view_rank ordering (e.g. data/core500-vocab-v3.jsonl)",
+    )
+    parser.add_argument(
+        "--existing",
+        type=Path,
+        default=None,
+        help=(
+            "optional existing drafts JSONL; entries without json_parse_failed "
+            "are preserved verbatim while failed/missing entries are regenerated"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -654,6 +755,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"maximum new tokens per entry (default: {DEFAULT_MAX_NEW_TOKENS})",
     )
     parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=(
+            "automatic strict-JSON retry passes for entries with json_parse_failed "
+            f"(default: {DEFAULT_MAX_RETRIES})"
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -670,12 +780,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output,
             args.snapshot_id,
             ranking_path=args.ranking,
+            existing_drafts_path=args.existing,
             metric_snapshot=args.metric_snapshot,
             dataset_version=args.dataset_version,
             model_name=args.model,
             min_pos_share=args.min_pos_share,
             batch_size=args.batch_size,
             max_new_tokens=args.max_new_tokens,
+            max_retries=args.max_retries,
             limit=args.limit,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
@@ -686,6 +798,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"model:           {manifest['model']}")
     print(f"entries_drafted: {manifest['entries_drafted']}")
     print(f"clean_records:   {manifest['clean_records']}")
+    print(f"retried_entries: {manifest['retried_entries']}")
     print(f"warnings:        {manifest['warning_counts']}")
     print(f"output:          {args.output}")
     return 0

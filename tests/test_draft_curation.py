@@ -325,3 +325,109 @@ def test_run_validation_errors(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="batch_size"):
         draft_curation.run(enrich_path, tmp_path / "out", "snap", batch_size=0)
+
+    with pytest.raises(ValueError, match="max_retries"):
+        draft_curation.run(enrich_path, tmp_path / "out", "snap", max_retries=-1)
+
+
+def test_parse_llm_json_trailing_comma() -> None:
+    trailing = '{"gloss": "無効にする", "categories": ["backend",],}'
+    assert draft_curation.parse_llm_json(trailing) == {
+        "gloss": "無効にする",
+        "categories": ["backend"],
+    }
+
+
+def test_run_retries_parse_failures_and_repairs_existing(tmp_path: Path) -> None:
+    enrich_path = tmp_path / "enrichment.jsonl"
+    enrich_path.write_text(
+        "\n".join(json.dumps(r) for r in _sample_enrichment_rows()) + "\n",
+        encoding="utf-8",
+    )
+
+    valid_inv = json.dumps(
+        {
+            "gloss": "無効にする",
+            "software_gloss": "キャッシュを無効化する",
+            "cefr": "C1",
+            "categories": ["backend"],
+            "example_en": "We invalidate the cache on deployment.",
+            "example_ja": "デプロイ時にキャッシュを無効化する。",
+        },
+        ensure_ascii=False,
+    )
+    valid_build = json.dumps(
+        {
+            "gloss": "構築する",
+            "software_gloss": "ビルドする",
+            "cefr": "A2",
+            "categories": ["core"],
+            "example_en": "The workflow builds the release artifact.",
+            "example_ja": "ワークフローはリリース成果物をビルドする。",
+        },
+        ensure_ascii=False,
+    )
+
+    # First run: invalidate fails on initial pass, succeeds on retry1.
+    def flaky_generator(batch_msgs: list[list[dict[str, str]]]) -> list[str]:
+        outs: list[str] = []
+        for msgs in batch_msgs:
+            prompt = msgs[1]["content"]
+            if "lemma): invalidate" in prompt and "IMPORTANT:" not in prompt:
+                outs.append("{broken json")
+            elif "lemma): invalidate" in prompt:
+                outs.append(valid_inv)
+            else:
+                outs.append(valid_build)
+        return outs
+
+    out_retry = tmp_path / "out_retry"
+    manifest = draft_curation.run(
+        enrich_path,
+        out_retry,
+        "retry-snap",
+        batch_size=4,
+        max_retries=2,
+        generator=flaky_generator,
+    )
+    assert manifest["entries_drafted"] == 3
+    assert manifest["clean_records"] == 3
+    assert manifest["retried_entries"] == 1
+    assert manifest["warning_counts"] == {}
+
+    # Second scenario: first run with max_retries=0 leaves 1 failed entry,
+    # then --existing repairs ONLY that failed entry without touching valid ones.
+    out_partial = tmp_path / "out_partial"
+    m_partial = draft_curation.run(
+        enrich_path,
+        out_partial,
+        "partial-snap",
+        batch_size=4,
+        max_retries=0,
+        generator=flaky_generator,
+    )
+    assert m_partial["warning_counts"]["json_parse_failed"] == 1
+
+    called_prompts: list[str] = []
+
+    def repair_generator(batch_msgs: list[list[dict[str, str]]]) -> list[str]:
+        for msgs in batch_msgs:
+            called_prompts.append(msgs[1]["content"])
+        return [valid_inv for _ in batch_msgs]
+
+    out_repaired = tmp_path / "out_repaired"
+    m_repaired = draft_curation.run(
+        enrich_path,
+        out_repaired,
+        "repaired-snap",
+        existing_drafts_path=out_partial / "drafts.jsonl",
+        batch_size=4,
+        max_retries=2,
+        generator=repair_generator,
+    )
+    assert len(called_prompts) == 1
+    assert "lemma): invalidate" in called_prompts[0]
+    assert m_repaired["entries_drafted"] == 3
+    assert m_repaired["clean_records"] == 3
+    assert m_repaired["warning_counts"] == {}
+
